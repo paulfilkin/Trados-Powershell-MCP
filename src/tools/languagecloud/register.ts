@@ -1,0 +1,42 @@
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { registerListCredentialsTool }        from "./list-credentials.js";
+import { registerSetCredentialTool }          from "./set-credential.js";
+import { registerListProjectsTool }           from "./list-projects.js";
+import { registerGetProjectTool }             from "./get-project.js";
+import { registerNewProjectTool }             from "./new-project.js";
+import { registerListProjectTemplatesTool }   from "./list-project-templates.js";
+import { registerListTmsTool }                from "./list-tms.js";
+import { registerGetTmTool }                  from "./get-tm.js";
+import { registerNewTmTool }                  from "./new-tm.js";
+import { registerImportTmTool }               from "./import-tm.js";
+import { registerExportTmTool }               from "./export-tm.js";
+import { registerListCustomersTool }          from "./list-customers.js";
+import { registerListWorkflowsTool }          from "./list-workflows.js";
+import { registerListTranslationEnginesTool } from "./list-translation-engines.js";
+import { registerListTermbasesTool }          from "./list-termbases.js";
+import { registerListUsersTool }              from "./list-users.js";
+import { registerNewTermbaseTool }            from "./new-termbase.js";
+import { registerImportTermbaseTool }         from "./import-termbase.js";
+import { registerExportTermbaseTool }         from "./export-termbase.js";
+
+export function registerLanguageCloudTools(server: McpServer) {
+  registerListCredentialsTool(server);
+  registerSetCredentialTool(server);
+  registerListProjectsTool(server);
+  registerGetProjectTool(server);
+  registerNewProjectTool(server);
+  registerListProjectTemplatesTool(server);
+  registerListTmsTool(server);
+  registerGetTmTool(server);
+  registerNewTmTool(server);
+  registerImportTmTool(server);
+  registerExportTmTool(server);
+  registerListCustomersTool(server);
+  registerListWorkflowsTool(server);
+  registerListTranslationEnginesTool(server);
+  registerListTermbasesTool(server);
+  registerListUsersTool(server);
+  registerNewTermbaseTool(server);
+  registerImportTermbaseTool(server);
+  registerExportTermbaseTool(server);
+}

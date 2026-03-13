@@ -1,0 +1,109 @@
+{
+  "dxt_version": "0.1",
+  "name": "trados-powershell-mcp",
+  "display_name": "Trados PowerShell MCP",
+  "version": "1.3.0",
+  "description": "MCP server wrapping the RWS Trados Studio, GroupShare, and Language Cloud PowerShell toolkits. Manage projects, translation memories, packages, and users through Claude.",
+  "author": {
+    "name": "multifarious"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "STUDIO_VERSION":        "${user_config.studio_version}",
+        "STUDIO_MODULES_PATH":   "${user_config.studio_modules_path}",
+        "GS_MODULES_PATH":       "${user_config.gs_modules_path}",
+        "LC_MODULES_PATH":       "${user_config.lc_modules_path}",
+        "GS_CREDENTIAL_STORE":   "${user_config.gs_credential_store}",
+        "GS_SERVER_URL":         "${user_config.gs_server_url}",
+        "GS_USERNAME":           "${user_config.gs_username}",
+        "GS_PASSWORD":           "${user_config.gs_password}",
+        "LC_CREDENTIAL_STORE":   "${user_config.lc_credential_store}",
+        "LC_CLIENT_ID":          "${user_config.lc_client_id}",
+        "LC_CLIENT_SECRET":      "${user_config.lc_client_secret}",
+        "LC_TENANT_ID":          "${user_config.lc_tenant_id}"
+      }
+    }
+  },
+  "user_config": {
+    "studio_version": {
+      "type": "string",
+      "title": "Studio Version",
+      "description": "Trados Studio folder name: Studio17 (2022) or Studio18 (2024)",
+      "default": "Studio18",
+      "required": false
+    },
+    "studio_modules_path": {
+      "type": "string",
+      "title": "Studio Toolkit Modules Path",
+      "description": "Path to the PS5 modules folder containing the Studio PowerShell Toolkit (e.g. C:\\Users\\YourName\\Documents\\WindowsPowerShell\\Modules). Leave blank if installed in the default location.",
+      "required": false
+    },
+    "gs_modules_path": {
+      "type": "string",
+      "title": "GroupShare Toolkit Modules Path",
+      "description": "Path to the PS7 modules folder containing the GroupShare PowerShell Toolkit (e.g. C:\\Users\\YourName\\Documents\\PowerShell\\Modules\\GroupShare). Leave blank if installed in the default location.",
+      "required": false
+    },
+    "lc_modules_path": {
+      "type": "string",
+      "title": "Language Cloud Toolkit Modules Path",
+      "description": "Path to the PS7 modules folder containing the Language Cloud PowerShell Toolkit (e.g. C:\\Users\\YourName\\Documents\\PowerShell\\Modules\\LanguageCloud). Leave blank if installed in the default location.",
+      "required": false
+    },
+    "gs_credential_store": {
+      "type": "string",
+      "title": "GroupShare Credential Store",
+      "description": "Path to a folder containing DPAPI-encrypted GroupShare credential XML files created with Export-CliXml. Preferred over raw credentials.",
+      "required": false
+    },
+    "gs_server_url": {
+      "type": "string",
+      "title": "GroupShare Server URL",
+      "description": "GroupShare server URL (e.g. https://groupshare.example.com). Used only if credential store is not set.",
+      "required": false
+    },
+    "gs_username": {
+      "type": "string",
+      "title": "GroupShare Username",
+      "description": "GroupShare username. Used only if credential store is not set.",
+      "required": false
+    },
+    "gs_password": {
+      "type": "string",
+      "title": "GroupShare Password",
+      "description": "GroupShare password. Used only if credential store is not set.",
+      "required": false,
+      "sensitive": true
+    },
+    "lc_credential_store": {
+      "type": "string",
+      "title": "Language Cloud Credential Store",
+      "description": "Path to a folder containing DPAPI-encrypted Language Cloud credential XML files created with Export-CliXml. Preferred over raw credentials.",
+      "required": false
+    },
+    "lc_client_id": {
+      "type": "string",
+      "title": "Language Cloud Client ID",
+      "description": "Language Cloud application Client ID. Used only if credential store is not set.",
+      "required": false
+    },
+    "lc_client_secret": {
+      "type": "string",
+      "title": "Language Cloud Client Secret",
+      "description": "Language Cloud application Client Secret. Used only if credential store is not set.",
+      "required": false,
+      "sensitive": true
+    },
+    "lc_tenant_id": {
+      "type": "string",
+      "title": "Language Cloud Tenant ID",
+      "description": "Language Cloud Tenant ID (Trados Account ID). Used only if credential store is not set.",
+      "required": false
+    }
+  }
+}
