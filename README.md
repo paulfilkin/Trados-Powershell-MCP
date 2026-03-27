@@ -12,10 +12,10 @@ The server exposes three groups of tools, one for each RWS PowerShell toolkit:
 Work with file-based projects on your local machine - create projects, run analysis, pre-translate against TMs, export and import translation packages, and manage file-based translation memories.
 
 **GroupShare** (`gs_*`)
-Manage projects on a GroupShare server - list and create projects, export and import packages, get analysis reports, download project files, manage translation memories, and handle users, roles, and organisations.
+Manage projects on a GroupShare server - list and create projects, export and import packages, get analysis reports, download project files, manage translation memories, browse containers and project templates, monitor background tasks, and handle users, roles, and organisations. Generate comprehensive organisation reports covering all resources in a single call.
 
 **Language Cloud** (`lc_*`)
-Automate Language Cloud workflows - create and manage projects, translation memories, and termbases, and browse available templates, workflows, translation engines, and users.
+Automate Language Cloud workflows - create and manage projects, translation memories, termbases, customers, and project templates. Browse locations, workflows, translation engines, file type configurations, language processing rules, field templates, and supported languages. Import TMX with fine-grained control over duplicate handling and confirmation level filtering.
 
 You don't need all three. The server detects which tools to register based on what you configure at installation time, so Claude Desktop only shows you what is actually usable in your environment.
 
@@ -63,7 +63,7 @@ npm run build
 To pack your own `.mcpb`:
 
 ```bash
-mcpb pack . trados-powershell-mcp-1.3.0.mcpb
+mcpb pack . trados-powershell-mcp-1.7.0.mcpb
 ```
 
 Then install the resulting `.mcpb` file via Claude Desktop as above.
