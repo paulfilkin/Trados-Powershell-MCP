@@ -1,6 +1,6 @@
 # Trados PowerShell MCP Server - Technical Design Document
 
-**Version:** 1.6.0
+**Version:** 1.7.0
 **Date:** 27 March 2026
 **Author:** multifarious
 **Platform:** Node.js (TypeScript), stdio transport
@@ -213,14 +213,28 @@ trados-powershell-mcp/
 │   │       ├── get-project.ts
 │   │       ├── new-project.ts
 │   │       ├── list-project-templates.ts
+│   │       ├── new-project-template.ts
+│   │       ├── remove-project-template.ts
 │   │       ├── list-tms.ts
 │   │       ├── get-tm.ts
 │   │       ├── new-tm.ts
+│   │       ├── remove-tm.ts
 │   │       ├── import-tm.ts
 │   │       ├── export-tm.ts
+│   │       ├── list-locations.ts
 │   │       ├── list-customers.ts
+│   │       ├── new-customer.ts
+│   │       ├── update-customer.ts
+│   │       ├── remove-customer.ts
 │   │       ├── list-workflows.ts
 │   │       ├── list-translation-engines.ts
+│   │       ├── list-file-type-configurations.ts
+│   │       ├── list-language-processing-rules.ts
+│   │       ├── list-field-templates.ts
+│   │       ├── list-pricing-models.ts
+│   │       ├── list-schedule-templates.ts
+│   │       ├── list-supported-languages.ts
+│   │       ├── list-groups.ts
 │   │       ├── list-termbases.ts
 │   │       ├── list-users.ts
 │   │       ├── new-termbase.ts
@@ -260,7 +274,7 @@ import { setActiveGsCredential, setActiveLcCredential } from "./state.js";
 
 const server = new McpServer({
   name: "trados-powershell",
-  version: "1.6.0",
+  version: "1.7.0",
 });
 
 // Studio: register unconditionally - toolkit will fail at runtime if not licensed
@@ -748,7 +762,7 @@ The `manifest.json` file at the project root defines the extension metadata and 
 ```json
 {
   "name": "trados-powershell-mcp",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "MCP server exposing Trados Studio, GroupShare, and Language Cloud management tools via the RWS PowerShell toolkits.",
   "author": "multifarious",
   "entry": "dist/index.js",
@@ -1386,7 +1400,7 @@ No parameters.
 
 **Toolkit:** `New-Project`
 
-**Description:** Create a new Language Cloud project. `$dueDate` (YYYY-MM-DD) and `$dueTime` (HH:MM) are separate mandatory parameters. `$filesPath` is the path to the source files folder. The project template, workflow, and translation engine are specified by name or ID via the `*IdOrName` parameters.
+**Description:** Create a new Language Cloud project. `$dueDate` (YYYY-MM-DD) and `$dueTime` (HH:MM) are separate mandatory parameters. `$filesPath` is the path to the source files folder. The project template, workflow, translation engine, and file type configuration are specified by name or ID via the `*IdOrName` parameters. An optional `$locationId` scopes the project to a specific location (use `lc_list_locations` to discover location IDs). Reference files can be attached via `$referenceFileNames`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1399,6 +1413,9 @@ No parameters.
 | `target_languages` | string | no | Comma-separated target language codes (overrides template if provided) |
 | `translation_engine` | string | no | Translation engine name or ID |
 | `workflow` | string | no | Workflow name or ID |
+| `file_type_configuration` | string | no | File type configuration name or ID (`$fileTypeConfigurationIdOrName`) |
+| `location_id` | string | no | Location ID to scope the project to (from `lc_list_locations`) |
+| `reference_file_names` | string | no | Comma-separated reference file names to attach |
 | `description` | string | no | Project description |
 
 ### 10.6 lc_list_project_templates
@@ -1432,22 +1449,23 @@ No parameters.
 
 **Toolkit:** `New-TranslationMemory`, `Get-LanguagePair`
 
-**Description:** Create a new Language Cloud TM. `$languageProcessingIdOrName` and `$fieldTemplateIdOrName` are mandatory toolkit parameters. The language pair is built via `Get-LanguagePair -sourceLanguage $src -targetLanguages @($tgt)`.
+**Description:** Create a new Language Cloud TM. `$languageProcessingIdOrName` and `$fieldTemplateIdOrName` are mandatory toolkit parameters. Use `lc_list_language_processing_rules` and `lc_list_field_templates` to discover available values. The language pair is built via `Get-LanguagePair -sourceLanguage $src -targetLanguages @($tgt)`. An optional `$locationId` scopes the TM to a specific location.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | TM name |
 | `source_language` | string | yes | Source language code |
 | `target_language` | string | yes | Target language code |
-| `language_processing` | string | yes | Language processing rule name or ID |
-| `field_template` | string | yes | Field template name or ID |
+| `language_processing` | string | yes | Language processing rule name or ID (use `lc_list_language_processing_rules` to discover) |
+| `field_template` | string | yes | Field template name or ID (use `lc_list_field_templates` to discover) |
+| `location_id` | string | no | Location ID to scope the TM to (from `lc_list_locations`) |
 | `description` | string | no | Optional description |
 
 ### 10.10 lc_import_tm
 
 **Toolkit:** `Import-TranslationMemory`
 
-**Description:** Import a TMX file into a Language Cloud TM. The TM is specified by name or ID. The import file path is passed as `$importFileLocation`.
+**Description:** Import a TMX file into a Language Cloud TM. The TM is specified by name or ID. The import file path is passed as `$importFileLocation`. Optional parameters control how duplicate and unknown content is handled during import.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1456,6 +1474,12 @@ No parameters.
 | `import_file_path` | string | yes | Path to the `.tmx` file (`$importFileLocation`) |
 | `source_language` | string | yes | Source language code |
 | `target_language` | string | yes | Target language code |
+| `import_as_plain_text` | boolean | no | Import as plain text, stripping formatting (default: false) |
+| `export_invalid_tus` | boolean | no | Export invalid translation units to a separate file (default: false) |
+| `trigger_recompute_statistics` | boolean | no | Recompute TM statistics after import (default: true) |
+| `target_segments_differ_option` | string | no | How to handle TUs where target differs: `addNew`, `overwrite`, `keepExisting`, `mergeIntoExisting` |
+| `unknown_fields_option` | string | no | How to handle unknown fields: `addToTranslationMemory`, `ignore`, `skipTranslationUnit` |
+| `confirmation_levels` | string | no | Comma-separated confirmation levels to import: `translated`, `approvedTranslation`, `approvedSignOff`, `draft`, `rejectedTranslation`, `rejectedSignOff`. Imports all levels if omitted. Maps to `-onlyImportSegmentsWithConfirmationLevels` |
 
 ### 10.11 lc_export_tm
 
@@ -1515,25 +1539,30 @@ No parameters.
 
 **Toolkit:** `New-Termbase` (TerminologyHelper)
 
-**Description:** Create a new termbase in Language Cloud using a named termbase template.
+**Description:** Create a new termbase in Language Cloud. The termbase structure can be defined either by a named termbase template (`$termbaseTemplateName`) or by an XDT file (`$pathToXDT`). When using an XDT file, set `inherit_languages` to true to derive the termbase languages from the XDT definition. An optional `$locationId` scopes the termbase to a specific location.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Termbase name |
-| `termbase_template` | string | yes | Termbase template name or ID |
+| `termbase_template` | string | no | Termbase template name or ID. Required if `xdt_path` is not provided. |
+| `xdt_path` | string | no | Path to an XDT file defining the termbase structure. Alternative to `termbase_template`. |
+| `inherit_languages` | boolean | no | Inherit languages from the XDT file (default: true when `xdt_path` is provided) |
+| `location_id` | string | no | Location ID to scope the termbase to (from `lc_list_locations`) |
 | `description` | string | no | Optional description |
 
 ### 10.18 lc_import_termbase
 
 **Toolkit:** `Import-Termbase` (TerminologyHelper)
 
-**Description:** Import a termbase file (TBX or other supported format) into a Language Cloud termbase. Provide either `termbase_name` or `termbase_id`.
+**Description:** Import a termbase file (MultiTerm XML, TBX, or other supported format) into a Language Cloud termbase. Provide either `termbase_name` or `termbase_id`. Optional parameters control duplicate handling and import strictness.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `termbase_name` | string | no | Termbase name |
 | `termbase_id` | string | no | Termbase ID |
 | `import_file_path` | string | yes | Path to the import file |
+| `duplicate_entries_strategy` | string | no | How to handle duplicate entries: `merge`, `overwrite`, `skipExisting` |
+| `strict_import` | boolean | no | Enable strict import validation (default: false) |
 
 ### 10.19 lc_export_termbase
 
@@ -1546,6 +1575,144 @@ No parameters.
 | `termbase_name` | string | no | Termbase name |
 | `termbase_id` | string | no | Termbase ID |
 | `output_path` | string | yes | Destination path for the exported file |
+
+### 10.20 lc_list_locations
+
+**Toolkit:** `Get-AllLocations` (ResourcesHelper)
+
+**Description:** List all locations in Language Cloud. Locations are the organisational hierarchy in LC (equivalent to GroupShare organisations). Many LC resources (TMs, termbases, project templates, customers) are scoped to a location. Use this tool to discover location IDs for use with `lc_new_project`, `lc_new_tm`, `lc_new_termbase`, `lc_new_project_template`, and `lc_new_customer`. The root location is typically the first entry returned.
+
+No parameters.
+
+### 10.21 lc_list_groups
+
+**Toolkit:** `Get-AllGroups` (UsersHelper)
+
+**Description:** List all user groups in Language Cloud.
+
+No parameters.
+
+### 10.22 lc_list_file_type_configurations
+
+**Toolkit:** `Get-AllFileTypeConfigurations` (ResourcesHelper)
+
+**Description:** List all file type configurations in Language Cloud. Use this to discover file type configuration names or IDs for `lc_new_project`. Each configuration has an associated location.
+
+No parameters.
+
+### 10.23 lc_list_language_processing_rules
+
+**Toolkit:** `Get-AllLanguageProcessingRules` (ResourcesHelper)
+
+**Description:** List all language processing rules in Language Cloud. Use this to discover the language processing rule name or ID required by `lc_new_tm`. Each rule has an associated location. Use `location_strategy` to control how rules are resolved relative to a location.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `location_id` | string | no | Scope to a specific location |
+| `location_strategy` | string | no | Location resolution strategy (e.g. `bloodline`). When set, also searches parent locations. |
+
+### 10.24 lc_list_field_templates
+
+**Toolkit:** `Get-AllFieldTemplates` (ResourcesHelper)
+
+**Description:** List all field templates in Language Cloud. Use this to discover the field template name or ID required by `lc_new_tm`. Each template has an associated location. Use `location_strategy` to control how templates are resolved relative to a location.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `location_id` | string | no | Scope to a specific location |
+| `location_strategy` | string | no | Location resolution strategy (e.g. `bloodline`). When set, also searches parent locations. |
+
+### 10.25 lc_list_pricing_models
+
+**Toolkit:** `Get-AllPricingModels` (ResourcesHelper)
+
+**Description:** List all pricing models in Language Cloud.
+
+No parameters.
+
+### 10.26 lc_list_schedule_templates
+
+**Toolkit:** `Get-AllScheduleTemplates` (ResourcesHelper)
+
+**Description:** List all schedule templates in Language Cloud.
+
+No parameters.
+
+### 10.27 lc_list_supported_languages
+
+**Toolkit:** `Get-SupportedLanguages` (ResourcesHelper)
+
+**Description:** List all languages supported by Language Cloud. Returns language code, English name, script direction, and whether the code is a neutral (region-independent) code. Useful for discovering valid language codes before creating projects, TMs, or termbases.
+
+No parameters.
+
+### 10.28 lc_new_customer
+
+**Toolkit:** `New-Customer` (ResourcesHelper)
+
+**Description:** Create a new customer in Language Cloud. The customer is scoped to a location. Creating a customer also creates a corresponding location as a child of the specified parent location; this new location may take a few seconds to become visible via `lc_list_locations`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Customer name |
+| `location_id` | string | yes | Parent location ID (from `lc_list_locations`) |
+
+### 10.29 lc_update_customer
+
+**Toolkit:** `Update-Customer` (ResourcesHelper)
+
+**Description:** Update an existing customer's properties. Currently supports updating the RAG (Red/Amber/Green) status.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `customer_id` | string | yes | Customer ID (from `lc_list_customers`) |
+| `rag_status` | string | no | RAG status: `red`, `amber`, `green` |
+
+### 10.30 lc_remove_customer
+
+**Toolkit:** `Remove-Customer` (ResourcesHelper)
+
+**Description:** Delete a customer from Language Cloud. Child customers must be removed before their parent. Any resources (projects, TMs, termbases) still associated with the customer's location must be removed first.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `customer_id` | string | yes | Customer ID (from `lc_list_customers`) |
+
+### 10.31 lc_remove_tm
+
+**Toolkit:** `Remove-TranslationMemory` (ResourcesHelper)
+
+**Description:** Delete a translation memory from Language Cloud. The TM must not be in use by any active project.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `tm_id` | string | yes | Translation memory ID (from `lc_list_tms` or `lc_get_tm`) |
+
+### 10.32 lc_new_project_template
+
+**Toolkit:** `New-ProjectTemplate` (ProjectHelper)
+
+**Description:** Create a new project template in Language Cloud. The template defines default settings (source/target languages, file type configuration, translation engine, workflow) that can be reused across multiple projects via `lc_new_project`.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Template name |
+| `location_id` | string | yes | Location ID to scope the template to (from `lc_list_locations`) |
+| `source_language` | string | yes | Source language code |
+| `target_languages` | string | yes | Comma-separated target language codes |
+| `file_type_configuration` | string | yes | File type configuration name or ID (`$fileTypeConfigurationIdOrName`) |
+| `translation_engine` | string | yes | Translation engine name or ID |
+| `workflow` | string | yes | Workflow name or ID |
+
+### 10.33 lc_remove_project_template
+
+**Toolkit:** `Remove-ProjectTemplate` (ProjectHelper)
+
+**Description:** Delete a project template from Language Cloud.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `template_id` | string | yes | Project template ID (from `lc_list_project_templates`) |
 
 ---
 
@@ -1675,7 +1842,7 @@ Decrypted credential values (passwords, client secrets) are never logged or retu
 
 ### 13.4 Destructive Operations
 
-`studio_remove_project` with `delete_files: true` permanently deletes the project folder. `gs_update_project_status` to `Completed` affects assignments and visibility for all project members on the server. Claude Desktop's built-in tool permission prompt provides the human-in-the-loop checkpoint before any tool executes.
+`studio_remove_project` with `delete_files: true` permanently deletes the project folder. `gs_update_project_status` to `Completed` affects assignments and visibility for all project members on the server. `lc_remove_tm`, `lc_remove_customer`, and `lc_remove_project_template` permanently delete resources from Language Cloud with no undo. Claude Desktop's built-in tool permission prompt provides the human-in-the-loop checkpoint before any tool executes.
 
 ---
 
@@ -1694,7 +1861,7 @@ npm run build
 **Step 2 - Pack the desktop extension:**
 
 ```bash
-mcpb pack . trados-powershell-mcp-1.6.0.mcpb
+mcpb pack . trados-powershell-mcp-1.7.0.mcpb
 ```
 
 This produces a `.mcpb` file in the project directory. The version number in the filename should match `version` in `manifest.json`.
@@ -1707,7 +1874,7 @@ Go to Settings → Extensions → Advanced settings → Install Extension and se
 ```json
 {
   "name": "trados-powershell-mcp",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "type": "module",
   "scripts": {
     "build": "tsc",
@@ -1869,6 +2036,34 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/index.js
 >
 > Claude calls `lc_list_tms` to confirm the TM exists, then `lc_export_tm`.
 
+**Language Cloud resource discovery:**
+
+> User: "I need to create a TM in Language Cloud but I don't know what language processing rules or field templates are available."
+>
+> Claude calls `lc_list_language_processing_rules` and `lc_list_field_templates`. Reports available values so the user can choose.
+
+> User: "What locations exist in our Language Cloud account?"
+>
+> Claude calls `lc_list_locations`. Returns the location hierarchy with IDs and names.
+
+> User: "What language codes does Language Cloud support for Japanese?"
+>
+> Claude calls `lc_list_supported_languages`. Filters the results to show Japanese-related codes (e.g. `ja-JP`).
+
+**Language Cloud customer management:**
+
+> User: "Create a new customer called 'ACME Corp' under the Customers location."
+>
+> Claude calls `lc_list_locations` to find the Customers location ID, then `lc_new_customer` with the location ID. Reports the new customer ID.
+
+> User: "Set the RAG status to red for ACME Corp."
+>
+> Claude calls `lc_list_customers` to find the customer ID, then `lc_update_customer` with `rag_status: "red"`.
+
+> User: "Delete the test TM called 'Demo TM' and remove the 'Test Customer'."
+>
+> Claude calls `lc_list_tms` to find the TM ID, calls `lc_remove_tm`, then calls `lc_list_customers` to find the customer ID, then `lc_remove_customer`.
+
 **Cross-system workflow combining all four MCP servers:**
 
 > User: "Take the completed German SDLXLIFF from the GroupShare project, check for any empty segments, fix any terminology issues with 'utilise' → 'use', then import it back."
@@ -1890,7 +2085,9 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/index.js
 9. **Active credential is session-scoped.** The credential selected via `gs_set_credential` or `lc_set_credential` is held in process memory only. It is lost when Claude Desktop is restarted. If the credential store contains exactly one XML per toolkit, that file is auto-selected at startup and no manual selection is needed. Users with multiple credentials in the store must call the set-credential tool at the start of each session.
 10. **Studio group is always registered.** Unlike the GS and LC groups, Studio tools are registered unconditionally because there is no credential to check at startup. If Studio is not installed or not licenced, Studio tool calls will fail at execution time rather than being silently absent from the tool list.
 11. **GS PSObject lookup overhead.** Because GroupShare toolkit functions take PSObjects rather than ID strings, every tool invocation that acts on an existing resource incurs at least one additional REST call to look up the object. This is unavoidable given the toolkit's design and is fast in practice.
-12. **LC `lc_new_tm` mandatory resource parameters.** `New-TranslationMemory` requires both a language processing rule name/ID and a field template name/ID. These cannot be omitted. Use `lc_list_tms` to see what values are in use on existing TMs if the correct names are not known.
+12. **LC `lc_new_tm` mandatory resource parameters.** `New-TranslationMemory` requires both a language processing rule name/ID and a field template name/ID. These cannot be omitted. Use `lc_list_language_processing_rules` and `lc_list_field_templates` to discover available values, or use `lc_list_tms` to see what values are in use on existing TMs.
 13. **GS list tools fetch all then filter client-side.** `gs_list_organizations`, `gs_list_tms`, `gs_list_project_templates`, and `gs_list_containers` call `Get-All*` to retrieve the full dataset, then apply `name_filter`, `parent_path`, and `max_results` via PowerShell pipeline. On very large servers this means the full dataset is loaded into memory even when only a small subset is needed. The `total` / `matchingCount` / `returnedCount` metadata helps the user understand the scope.
 14. **GS toolkit stdout warnings.** Some GroupShare toolkit functions write non-JSON warnings or error messages to stdout via `Write-Host` before the expected JSON output. The `safeParseJson` function in `common.ts` handles this by extracting the last top-level JSON object from stdout and attaching any prefix text as a `_warnings` property. This means tool results may include a `_warnings` field containing raw toolkit error text alongside valid data.
 15. **GS `gs_org_report` loads global datasets.** The org report tool calls `Get-AllContainers`, `Get-AllTMs`, and `Get-AllProjectTemplates` to retrieve server-wide datasets, then filters locally by organisation. On servers with very large numbers of these resources, this may be slow or hit memory limits. The containers-to-TMs join is particularly expensive as it filters `Get-AllTMs` results by `ContainerId` for each container owned by the target organisation.
+16. **LC customer location propagation delay.** When `lc_new_customer` creates a customer, the corresponding child location may take several seconds to appear in `lc_list_locations`. Scripts that create a customer and immediately need its location ID should allow for a brief delay before querying locations.
+17. **LC destructive operations require empty resources.** `lc_remove_customer` fails if projects, TMs, termbases, or project templates are still associated with the customer's location. Child customers must be removed before their parent. Resources must be deleted in the correct order: TMs and termbases first, then project templates, then child customers, then the parent customer.
