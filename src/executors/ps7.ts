@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { psStr, psPath, extractPsError } from "./common.js";
+import { psStr, psPath, extractPsError, safeParseJson } from "./common.js";
 import { activeGsCredentialFile, activeLcCredentialFile } from "../state.js";
 
 const execFileAsync = promisify(execFile);
@@ -117,5 +117,5 @@ export async function ps7(type: ToolkitType, scriptBody: string, options: Ps7Opt
   );
 
   if (stderr?.trim()) throw new Error(extractPsError(stderr));
-  return stdout.trim() ? JSON.parse(stdout.trim()) : {};
+  return safeParseJson(stdout);
 }

@@ -1,6 +1,6 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { extractPsError } from "./common.js";
+import { extractPsError, safeParseJson } from "./common.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,5 +48,5 @@ export async function studioPs(scriptBody: string, options: StudioPsOptions = {}
   );
 
   if (stderr?.trim()) throw new Error(extractPsError(stderr));
-  return stdout.trim() ? (JSON.parse(stdout.trim()) as object) : {};
+  return safeParseJson(stdout);
 }
