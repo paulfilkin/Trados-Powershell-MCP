@@ -9,6 +9,7 @@ import { registerExportPackageTool }         from "./export-package.js";
 import { registerImportPackageTool }         from "./import-package.js";
 import { registerGetAnalysisReportTool }     from "./get-analysis-report.js";
 import { registerSaveProjectFilesTool }      from "./save-project-files.js";
+import { registerListContainersTool }        from "./list-containers.js";
 import { registerListTmsTool }               from "./list-tms.js";
 import { registerNewTmTool }                 from "./new-tm.js";
 import { registerImportTmxTool }             from "./import-tmx.js";
@@ -22,6 +23,7 @@ import { registerUpdateUserTool }            from "./update-user.js";
 import { registerNewRoleTool }               from "./new-role.js";
 import { registerUpdateRoleToUserTool }      from "./update-role-to-user.js";
 import { registerMoveOrganizationResourcesTool } from "./move-organization-resources.js";
+import { registerOrgReportTool }             from "./org-report.js";
 
 export function registerGroupShareTools(server: McpServer) {
   registerListCredentialsTool(server);
@@ -34,6 +36,7 @@ export function registerGroupShareTools(server: McpServer) {
   registerImportPackageTool(server);
   registerGetAnalysisReportTool(server);
   registerSaveProjectFilesTool(server);
+  registerListContainersTool(server);
   registerListTmsTool(server);
   registerNewTmTool(server);
   registerImportTmxTool(server);
@@ -47,4 +50,5 @@ export function registerGroupShareTools(server: McpServer) {
   registerNewRoleTool(server);
   registerUpdateRoleToUserTool(server);
   registerMoveOrganizationResourcesTool(server);
+  registerOrgReportTool(server);
 }
