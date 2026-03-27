@@ -1,7 +1,7 @@
 # Trados PowerShell MCP Server - Technical Design Document
 
-**Version:** 1.3.0
-**Date:** 11 March 2026
+**Version:** 1.6.0
+**Date:** 27 March 2026
 **Author:** multifarious
 **Platform:** Node.js (TypeScript), stdio transport
 
@@ -162,7 +162,7 @@ trados-powershell-mcp/
 │   ├── executors/
 │   │   ├── studio-ps.ts                PS5 x86 executor for Studio toolkit calls
 │   │   ├── ps7.ts                      PS7 executor for GroupShare and Language Cloud calls
-│   │   └── common.ts                   Shared utilities: psStr, psPath, extractPsError
+│   │   └── common.ts                   Shared utilities: psStr, psPath, extractPsError, safeParseJson
 │   ├── tools/
 │   │   ├── studio/
 │   │   │   ├── register.ts             Registers all studio_* tools
@@ -190,6 +190,7 @@ trados-powershell-mcp/
 │   │   │   ├── import-package.ts
 │   │   │   ├── get-analysis-report.ts
 │   │   │   ├── save-project-files.ts
+│   │   │   ├── list-containers.ts
 │   │   │   ├── list-tms.ts
 │   │   │   ├── new-tm.ts
 │   │   │   ├── import-tmx.ts
@@ -202,7 +203,8 @@ trados-powershell-mcp/
 │   │   │   ├── update-user.ts
 │   │   │   ├── new-role.ts
 │   │   │   ├── update-role-to-user.ts
-│   │   │   └── move-organization-resources.ts
+│   │   │   ├── move-organization-resources.ts
+│   │   │   └── org-report.ts
 │   │   └── languagecloud/
 │   │       ├── register.ts             Registers all lc_* tools
 │   │       ├── list-credentials.ts
@@ -258,7 +260,7 @@ import { setActiveGsCredential, setActiveLcCredential } from "./state.js";
 
 const server = new McpServer({
   name: "trados-powershell",
-  version: "1.3.0",
+  version: "1.6.0",
 });
 
 // Studio: register unconditionally - toolkit will fail at runtime if not licensed
@@ -313,30 +315,37 @@ Invokes the PS5 x86 host, loads `ToolkitInitializer`, and wraps the script body 
 ```typescript
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { extractPsError } from "./common.js";
+import { extractPsError, safeParseJson } from "./common.js";
 
 const execFileAsync = promisify(execFile);
 
-const PS5_PATH = process.env.STUDIO_PS_PATH
-  || "C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe";
+const PS5_PATH =
+  process.env.STUDIO_PS_PATH ??
+  "C:\\Windows\\SysWOW64\\WindowsPowerShell\\v1.0\\powershell.exe";
 
-const STUDIO_VERSION = process.env.STUDIO_VERSION || "Studio18";
+const STUDIO_VERSION = process.env.STUDIO_VERSION ?? "Studio18";
+const STUDIO_MODULES_PATH = process.env.STUDIO_MODULES_PATH ?? "";
 
 interface StudioPsOptions {
   bare?: boolean; // skip Import-Module / Import-ToolkitModules (filesystem-only scripts)
 }
 
 export async function studioPs(scriptBody: string, options: StudioPsOptions = {}): Promise<object> {
-  const preamble = options.bare ? "" : `
-    Import-Module -Name ToolkitInitializer -ErrorAction Stop
-    Import-ToolkitModules -StudioVersion "${STUDIO_VERSION}"
-  `;
+  const modulePathBlock = STUDIO_MODULES_PATH
+    ? `$env:PSModulePath = "${STUDIO_MODULES_PATH.replace(/\\/g, "\\\\")};" + $env:PSModulePath`
+    : "";
+
+  const toolkitPreamble = options.bare
+    ? ""
+    : `Import-Module -Name ToolkitInitializer -ErrorAction Stop
+      Import-ToolkitModules -StudioVersion "${STUDIO_VERSION}"`;
 
   const script = `
     Set-StrictMode -Off
     $ErrorActionPreference = "Stop"
     try {
-      ${preamble}
+      ${modulePathBlock}
+      ${toolkitPreamble}
       ${scriptBody}
     } catch {
       $err = @{ error = $_.Exception.Message; detail = $_.ScriptStackTrace }
@@ -352,7 +361,7 @@ export async function studioPs(scriptBody: string, options: StudioPsOptions = {}
   );
 
   if (stderr?.trim()) throw new Error(extractPsError(stderr));
-  return stdout.trim() ? JSON.parse(stdout.trim()) : {};
+  return safeParseJson(stdout);
 }
 ```
 
@@ -375,7 +384,7 @@ Both preambles read the active credential file path from the `state` module (set
 ```typescript
 import { execFile } from "child_process";
 import { promisify } from "util";
-import { psStr, psPath, extractPsError } from "./common.js";
+import { psStr, psPath, extractPsError, safeParseJson } from "./common.js";
 import { activeGsCredentialFile, activeLcCredentialFile } from "../state.js";
 
 const execFileAsync = promisify(execFile);
@@ -492,7 +501,7 @@ export async function ps7(type: ToolkitType, scriptBody: string, options: Ps7Opt
   );
 
   if (stderr?.trim()) throw new Error(extractPsError(stderr));
-  return stdout.trim() ? JSON.parse(stdout.trim()) : {};
+  return safeParseJson(stdout);
 }
 ```
 
@@ -537,6 +546,56 @@ export function extractPsError(stderr: string): string {
     return parsed.error || stderr.trim();
   } catch {
     return stderr.trim();
+  }
+}
+
+/**
+ * Safely parse JSON from PowerShell stdout.
+ *
+ * Some toolkit functions write warnings or error messages to stdout via
+ * Write-Host / Write-Warning before the JSON output. This function:
+ *  1. Tries JSON.parse on the full string (fast path).
+ *  2. If that fails, scans for the last top-level JSON object ({...})
+ *     and tries to parse that.
+ *  3. If that also fails, throws with the raw stdout text so the caller
+ *     can surface it as a readable error.
+ *
+ * If prefix text was found before the JSON, it is attached as a `_warnings`
+ * property on the returned object.
+ */
+export function safeParseJson(stdout: string): object {
+  const trimmed = stdout.trim();
+  if (!trimmed) return {};
+
+  try {
+    return JSON.parse(trimmed) as object;
+  } catch {
+    // Fall through to extraction.
+  }
+
+  const lastBrace = trimmed.lastIndexOf("}");
+  if (lastBrace === -1) throw new Error(trimmed);
+
+  let depth = 0;
+  let start = -1;
+  for (let i = lastBrace; i >= 0; i--) {
+    if (trimmed[i] === "}") depth++;
+    if (trimmed[i] === "{") depth--;
+    if (depth === 0) { start = i; break; }
+  }
+
+  if (start === -1) throw new Error(trimmed);
+
+  const jsonCandidate = trimmed.substring(start, lastBrace + 1);
+  try {
+    const parsed = JSON.parse(jsonCandidate) as object;
+    const prefix = trimmed.substring(0, start).trim();
+    if (prefix) {
+      (parsed as Record<string, unknown>)._warnings = prefix;
+    }
+    return parsed;
+  } catch {
+    throw new Error(trimmed);
   }
 }
 ```
@@ -689,7 +748,7 @@ The `manifest.json` file at the project root defines the extension metadata and 
 ```json
 {
   "name": "trados-powershell-mcp",
-  "version": "1.3.0",
+  "version": "1.6.0",
   "description": "MCP server exposing Trados Studio, GroupShare, and Language Cloud management tools via the RWS PowerShell toolkits.",
   "author": "multifarious",
   "entry": "dist/index.js",
@@ -798,9 +857,9 @@ All Studio tools use the `studioPs()` executor. The Studio toolkit requires PS5 
 
 ### 8.1 studio_list_projects
 
-**Description:** List all Trados Studio file-based projects registered for the current user. Returns name, status, source language, target languages, creation date, and project folder path.
+**Description:** List all Trados Studio file-based projects registered for the current user. Returns name, status, creation date, and project folder path.
 
-**Implementation note:** Uses `studioPs({ bare: true })` - reads `%APPDATA%\Trados\Trados Studio\{version}\projects.xml` directly via `Get-Content` + XML parsing. Does not load the Studio API. Faster and avoids a licence check for a read-only query.
+**Implementation note:** Uses `studioPs({ bare: true })` - reads `[Environment]::GetFolderPath('MyDocuments')\{Studio folder}\Projects\projects.xml` directly via `Get-Content` + XML parsing (`Studio18` maps to folder `Studio 2024`, `Studio17` to `Studio 2022`). Does not load the Studio API. Faster and avoids a licence check for a read-only query. Source and target languages are not available from `projects.xml` - use `studio_get_project` for language details. The XML structure is `ProjectServer.Projects.ProjectListItem`, with project metadata in the child `ProjectInfo` element's attributes. `ProjectFilePath` may be relative (resolved against the Projects folder) or absolute (used as-is). Note that Studio stores status `Started` internally for projects shown as "In Progress" in the UI.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -975,14 +1034,21 @@ Returns the server URL and username from the selected file as confirmation.
 
 **Toolkit:** `Get-AllProjects`
 
-**Description:** List projects on the GroupShare server. Supports filtering by status, organisation, and date range.
+**Description:** List projects on the GroupShare server. Supports filtering by status, organisation, date range, and name. Set `include_sub_organizations` to true to include projects from child organisations. Use `group_by` to get a count summary (e.g. by organisation or status) instead of individual projects. Use `compact` mode for a scannable listing. All list results include `total` and `returnedCount` metadata.
+
+**Implementation note:** Always passes `-defaultPublishDates $false -defaultDueDates $false` to `Get-AllProjects` to avoid the toolkit's restrictive date defaults that hide projects. Without these flags, the toolkit applies narrow date ranges that cause most projects to be excluded from results.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `statuses` | string | no | Comma-separated statuses: `Pending`, `In Progress`, `Completed`, `Archived` - split into a string array before passing to the toolkit |
 | `organization_name` | string | no | Filter to projects within a specific organisation (resolved to PSObject via `Get-Organization`) |
+| `include_sub_organizations` | boolean | no | Include projects from child organisations (default: false). Maps to `-includeSubOrganizations` |
 | `due_start` | string | no | Due date range start (YYYY-MM-DD) |
 | `due_end` | string | no | Due date range end (YYYY-MM-DD) |
+| `name_filter` | string | no | Wildcard filter on project name (e.g. `*Newsletter*`). Applied client-side via `Where-Object` |
+| `group_by` | string | no | Return count summary grouped by `organisation`, `status`, or `source_language` instead of individual projects |
+| `compact` | boolean | no | Return only name, status, organisation, and languages (default: false) |
+| `max_results` | number | no | Maximum number of projects to return (default: 50) |
 
 ### 9.4 gs_get_project
 
@@ -1077,11 +1143,14 @@ Returns the server URL and username from the selected file as confirmation.
 
 **Toolkit:** `Get-AllTMs`, `Get-TMsByContainer`, `Get-Container` (SystemConfigurationHelper)
 
-**Description:** List translation memories on the GroupShare server. If `container_name` is provided, resolves it to a PSObject via `SystemConfigurationHelper.Get-Container` and passes it to `Get-TMsByContainer`. Otherwise calls `Get-AllTMs`.
+**Description:** List translation memories on the GroupShare server. If `container_name` is provided, resolves it to a PSObject via `SystemConfigurationHelper.Get-Container` and passes it to `Get-TMsByContainer`. Otherwise calls `Get-AllTMs`. Use `name_filter` with wildcards to search. All list results include `total`, `matchingCount`, and `returnedCount` metadata.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `container_name` | string | no | Filter to TMs within a specific container |
+| `name_filter` | string | no | Wildcard filter on TM name (e.g. `*Marketing*`). Applied client-side via `Where-Object` |
+| `compact` | boolean | no | Return only name and language pair (default: false) |
+| `max_results` | number | no | Maximum number of TMs to return (default: 50) |
 
 ### 9.12 gs_new_tm
 
@@ -1128,17 +1197,26 @@ Returns the server URL and username from the selected file as confirmation.
 
 **Toolkit:** `Get-AllProjectTemplates`
 
-**Description:** List all project templates available on the GroupShare server. Use this to discover template names for `gs_new_project`.
+**Description:** List project templates available on the GroupShare server. Use this to discover template names for `gs_new_project`. Templates have an `OrganizationId` property and can be filtered to a specific organisation by combining with `gs_list_organizations`. All list results include `total` and `returnedCount` metadata.
 
-No parameters.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name_filter` | string | no | Wildcard filter on template name (e.g. `*Legal*`). Applied client-side via `Where-Object` |
+| `compact` | boolean | no | Return only template names (default: false) |
+| `max_results` | number | no | Maximum number of templates to return (default: 50) |
 
 ### 9.16 gs_list_organizations
 
 **Toolkit:** `Get-AllOrganizations`
 
-**Description:** List all organisations on the GroupShare server. Use this to discover organisation names for filtering projects and creating TMs.
+**Description:** List organisations on the GroupShare server. Use `parent_path` to browse the hierarchy: `/` for top-level organisations, `/Consoltec` for its direct children, etc. The filter works by stripping the last path segment from each organisation's `Path` property and comparing it to `parent_path`. Use `name_filter` with wildcards to search across all organisations. Use `compact` mode for a scannable name + path listing. All list results include `total`, `matchingCount`, and `returnedCount` metadata.
 
-No parameters.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `parent_path` | string | no | Show only direct children of this path (e.g. `/` for top-level, `/Consoltec` for its children) |
+| `name_filter` | string | no | Wildcard filter on organisation name (e.g. `*QA*`). Applied client-side via `Where-Object` |
+| `compact` | boolean | no | Return only name and path (default: false) |
+| `max_results` | number | no | Maximum number of organisations to return (default: 50) |
 
 ### 9.17 gs_list_users
 
@@ -1224,6 +1302,34 @@ No parameters.
 |---|---|---|---|
 | `source_organization_name` | string | yes | Organisation to move resources from |
 | `target_organization_name` | string | yes | Organisation to move resources to |
+
+### 9.24 gs_list_containers
+
+**Toolkit:** `Get-AllContainers` (SystemConfigurationHelper), `Get-Organization`
+
+**Description:** List containers on the GroupShare server. If `organization_name` is provided, filters to containers owned by that organisation by matching the container's `OwnerId` property against the organisation's `UniqueId`. Use `name_filter` with wildcards to search by `DisplayName`. All list results include `total`, `matchingCount`, and `returnedCount` metadata.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `organization_name` | string | no | Filter to containers owned by this organisation |
+| `name_filter` | string | no | Wildcard filter on container name (e.g. `*Production*`). Applied client-side via `Where-Object` on `DisplayName` |
+| `compact` | boolean | no | Return only name and containerId (default: false) |
+| `max_results` | number | no | Maximum number of containers to return (default: 50) |
+
+### 9.25 gs_org_report
+
+**Toolkit:** `Get-Organization`, `Get-AllOrganizations`, `Get-AllProjects`, `Get-AllContainers`, `Get-AllTMs`, `Get-AllProjectTemplates`, `Get-AllUsers`
+
+**Description:** Generate a comprehensive report for a GroupShare organisation. Gathers child organisations (full subtree), projects with status and language summaries, containers owned by the organisation with TMs per container, project templates belonging to the organisation, and users - all in a single authenticated script call. Returns a structured JSON object with counts and items for each resource type.
+
+**Implementation note:** Containers are matched by `$_.OwnerId -eq $org.UniqueId`. TMs are matched by `$_.ContainerId -eq $container.ContainerId`. Project templates are matched by `$_.OrganizationId -eq $org.UniqueId`. Child organisations are found by matching paths that start with the target org's path followed by `/`. Projects use `-includeSubOrganizations`, `-defaultPublishDates $false`, and `-defaultDueDates $false` for complete results.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `organization_name` | string | yes | Organisation name to report on |
+| `include_sub_organizations` | boolean | no | Include projects from child organisations (default: true) |
+| `max_projects` | number | no | Maximum number of projects to return in detail (default: 100) |
+| `max_users` | number | no | Maximum number of users to return (default: 100) |
 
 ---
 
@@ -1588,7 +1694,7 @@ npm run build
 **Step 2 - Pack the desktop extension:**
 
 ```bash
-mcpb pack . trados-powershell-mcp-1.3.0.mcpb
+mcpb pack . trados-powershell-mcp-1.6.0.mcpb
 ```
 
 This produces a `.mcpb` file in the project directory. The version number in the filename should match `version` in `manifest.json`.
@@ -1601,7 +1707,7 @@ Go to Settings → Extensions → Advanced settings → Install Extension and se
 ```json
 {
   "name": "trados-powershell-mcp",
-  "version": "1.3.0",
+  "version": "1.6.0",
   "type": "module",
   "scripts": {
     "build": "tsc",
@@ -1729,6 +1835,26 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/index.js
 >
 > Claude calls `gs_update_project_status` with `status: "Completed"`.
 
+**GroupShare hierarchy browsing:**
+
+> User: "Show me the top-level organisations on GroupShare."
+>
+> Claude calls `gs_list_organizations` with `parent_path: "/"` and `compact: true`. Returns a scannable list of names and paths with a total count showing how many organisations exist on the server overall.
+
+> User: "Drill into the Consoltec organisation."
+>
+> Claude calls `gs_list_organizations` with `parent_path: "/Consoltec"` and `compact: true`. Returns direct children only.
+
+> User: "How many projects are in that organisation, grouped by status?"
+>
+> Claude calls `gs_list_projects` with `organization_name: "Consoltec"`, `include_sub_organizations: true`, and `group_by: "status"`. Returns a count summary per status value.
+
+**GroupShare organisation report:**
+
+> User: "Give me a full summary of everything in the multifarious organisation."
+>
+> Claude calls `gs_org_report` with `organization_name: "multifarious"`. Returns child organisations, projects with status/language summaries, containers with TMs per container, project templates, and users - all from a single call.
+
 **Language Cloud workflow:**
 
 > User: "What project templates do we have in Language Cloud?"
@@ -1765,3 +1891,6 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/index.js
 10. **Studio group is always registered.** Unlike the GS and LC groups, Studio tools are registered unconditionally because there is no credential to check at startup. If Studio is not installed or not licenced, Studio tool calls will fail at execution time rather than being silently absent from the tool list.
 11. **GS PSObject lookup overhead.** Because GroupShare toolkit functions take PSObjects rather than ID strings, every tool invocation that acts on an existing resource incurs at least one additional REST call to look up the object. This is unavoidable given the toolkit's design and is fast in practice.
 12. **LC `lc_new_tm` mandatory resource parameters.** `New-TranslationMemory` requires both a language processing rule name/ID and a field template name/ID. These cannot be omitted. Use `lc_list_tms` to see what values are in use on existing TMs if the correct names are not known.
+13. **GS list tools fetch all then filter client-side.** `gs_list_organizations`, `gs_list_tms`, `gs_list_project_templates`, and `gs_list_containers` call `Get-All*` to retrieve the full dataset, then apply `name_filter`, `parent_path`, and `max_results` via PowerShell pipeline. On very large servers this means the full dataset is loaded into memory even when only a small subset is needed. The `total` / `matchingCount` / `returnedCount` metadata helps the user understand the scope.
+14. **GS toolkit stdout warnings.** Some GroupShare toolkit functions write non-JSON warnings or error messages to stdout via `Write-Host` before the expected JSON output. The `safeParseJson` function in `common.ts` handles this by extracting the last top-level JSON object from stdout and attaching any prefix text as a `_warnings` property. This means tool results may include a `_warnings` field containing raw toolkit error text alongside valid data.
+15. **GS `gs_org_report` loads global datasets.** The org report tool calls `Get-AllContainers`, `Get-AllTMs`, and `Get-AllProjectTemplates` to retrieve server-wide datasets, then filters locally by organisation. On servers with very large numbers of these resources, this may be slow or hit memory limits. The containers-to-TMs join is particularly expensive as it filters `Get-AllTMs` results by `ContainerId` for each container owned by the target organisation.
