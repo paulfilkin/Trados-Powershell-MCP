@@ -2,7 +2,7 @@
   "dxt_version": "0.1",
   "name": "trados-powershell-mcp",
   "display_name": "Trados PowerShell MCP",
-  "version": "1.6.0",
+  "version": "1.7.1",
   "description": "MCP server wrapping the RWS Trados Studio, GroupShare, and Language Cloud PowerShell toolkits. Manage projects, translation memories, packages, and users through Claude.",
   "author": {
     "name": "multifarious"
