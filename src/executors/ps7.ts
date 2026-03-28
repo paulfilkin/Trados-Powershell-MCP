@@ -89,7 +89,14 @@ function buildPreamble(type: ToolkitType): string {
       Import-Module -Name ResourcesHelper      -ErrorAction Stop
       Import-Module -Name UsersHelper          -ErrorAction Stop
       Import-Module -Name TerminologyHelper    -ErrorAction Stop
-      $accessKey = Get-AccessKey -id $clientId -secret $clientSecret -lcTenant $lcTenant
+      $savedCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+      [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::InvariantCulture
+      try {
+          $accessKey = Get-AccessKey -id $clientId -secret $clientSecret -lcTenant $lcTenant
+      }
+      finally {
+          [System.Threading.Thread]::CurrentThread.CurrentCulture = $savedCulture
+      }
     `;
   }
 }
