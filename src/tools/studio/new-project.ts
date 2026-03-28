@@ -71,11 +71,11 @@ export function registerNewProjectTool(server: McpServer): void {
             ${descriptionBlock}
 
           # Open the project to confirm it was created and return its details
-          $project = Get-Project -projectDestinationPath $outputPath
-
-          if ($null -eq $project) {
-            throw "Project creation appeared to succeed but the project could not be reopened at: $outputPath"
+          $projFile = Get-ChildItem -Path $outputPath -Filter '*.sdlproj' -File | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $projFile) {
+            throw "Project creation appeared to succeed but no .sdlproj file found in: $outputPath"
           }
+          $project = [Sdl.ProjectAutomation.FileBased.FileBasedProject]::new($projFile)
 
           $info = $project.GetProjectInfo()
 

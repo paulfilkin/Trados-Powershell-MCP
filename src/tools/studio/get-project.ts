@@ -22,11 +22,11 @@ export function registerGetProjectTool(server: McpServer): void {
         const includeStats = params.include_statistics === true;
 
         const script = `
-          $project = Get-Project -projectDestinationPath ${psPath(params.project_path)}
-
-          if ($null -eq $project) {
-            throw "No project found at: ${psPath(params.project_path)}"
+          $projFile = Get-ChildItem -Path ${psPath(params.project_path)} -Filter '*.sdlproj' -File | Select-Object -First 1 -ExpandProperty FullName
+          if (-not $projFile) {
+            throw "No .sdlproj file found in: ${psPath(params.project_path)}"
           }
+          $project = [Sdl.ProjectAutomation.FileBased.FileBasedProject]::new($projFile)
 
           $info = $project.GetProjectInfo()
 
