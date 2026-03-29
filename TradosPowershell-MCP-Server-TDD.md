@@ -1,7 +1,7 @@
 # Trados PowerShell MCP Server - Technical Design Document
 
-**Version:** 1.7.0
-**Date:** 27 March 2026
+**Version:** 1.7.7
+**Date:** 29 March 2026
 **Author:** multifarious
 **Platform:** Node.js (TypeScript), stdio transport
 
@@ -177,7 +177,8 @@ trados-powershell-mcp/
 │   │   │   ├── list-tms.ts
 │   │   │   ├── new-tm.ts
 │   │   │   ├── import-tmx.ts
-│   │   │   └── export-tmx.ts
+│   │   │   ├── export-tmx.ts
+│   │   │   └── list-project-templates.ts
 │   │   ├── groupshare/
 │   │   │   ├── register.ts             Registers all gs_* tools
 │   │   │   ├── list-credentials.ts
@@ -326,9 +327,15 @@ await server.connect(transport);
 
 Invokes the PS5 x86 host, loads `ToolkitInitializer`, and wraps the script body in error handling. The optional `bare` flag skips module loading entirely for filesystem-only scripts (e.g. `studio_list_projects`).
 
+**Encoding fix:** The script is written to a temporary `.ps1` file with a UTF-8 BOM rather than passed via `-Command`. PowerShell 5.1 requires the BOM to read UTF-8 correctly, and `-Command` goes through Windows argument parsing which mangles non-ASCII characters on systems with an ANSI codepage. The executor uses `-ExecutionPolicy Bypass -File` to run the temp script, includes `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` inside the script body so stdout comes back clean, and cleans up the temp file in a `finally` block.
+
 ```typescript
 import { execFile } from "child_process";
 import { promisify } from "util";
+import { writeFile, unlink } from "fs/promises";
+import { join } from "path";
+import { tmpdir } from "os";
+import { randomUUID } from "crypto";
 import { extractPsError, safeParseJson } from "./common.js";
 
 const execFileAsync = promisify(execFile);
@@ -355,6 +362,7 @@ export async function studioPs(scriptBody: string, options: StudioPsOptions = {}
       Import-ToolkitModules -StudioVersion "${STUDIO_VERSION}"`;
 
   const script = `
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
     Set-StrictMode -Off
     $ErrorActionPreference = "Stop"
     try {
@@ -368,14 +376,21 @@ export async function studioPs(scriptBody: string, options: StudioPsOptions = {}
     }
   `;
 
-  const { stdout, stderr } = await execFileAsync(
-    PS5_PATH,
-    ["-NonInteractive", "-NoProfile", "-Command", script],
-    { timeout: 600000, maxBuffer: 50 * 1024 * 1024, windowsHide: true }
-  );
+  const tempScript = join(tmpdir(), `trados-mcp-${randomUUID()}.ps1`);
+  try {
+    await writeFile(tempScript, "\uFEFF" + script, "utf-8");
 
-  if (stderr?.trim()) throw new Error(extractPsError(stderr));
-  return safeParseJson(stdout);
+    const { stdout, stderr } = await execFileAsync(
+      PS5_PATH,
+      ["-NonInteractive", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tempScript],
+      { timeout: 600000, maxBuffer: 50 * 1024 * 1024, windowsHide: true }
+    );
+
+    if (stderr?.trim()) throw new Error(extractPsError(stderr));
+    return safeParseJson(stdout);
+  } finally {
+    try { await unlink(tempScript); } catch { /* ignore cleanup errors */ }
+  }
 }
 ```
 
@@ -390,6 +405,8 @@ The optional `bare` flag skips all module loading and authentication. This is us
 The GroupShare preamble loads six modules plus `SystemConfigurationHelper` (needed for container and DB server lookups). All GS toolkit functions take an `$authorizationToken` string. The preamble exposes `$authToken`.
 
 The Language Cloud preamble loads five modules. All LC toolkit functions take an `$accessKey` PSObject (containing `.token` and `.tenant` properties). The preamble exposes `$accessKey`.
+
+**Locale fix:** The `Get-AccessKey` call is wrapped in a temporary `InvariantCulture` override. The LC toolkit's `AuthenticationHelper` parses date strings from the OAuth token response using US date format assumptions. On non-US locale systems (e.g. German `de-DE`), this parse fails silently or throws. The culture override ensures correct parsing regardless of the host system's locale, and is restored in a `finally` block.
 
 Both preambles read the active credential file path from the `state` module (set by `gs_set_credential` / `lc_set_credential` or auto-selected at startup). The raw environment variable fallback is used only when no credential store is configured.
 
@@ -487,7 +504,13 @@ function buildPreamble(type: ToolkitType): string {
       Import-Module -Name ResourcesHelper      -ErrorAction Stop
       Import-Module -Name UsersHelper          -ErrorAction Stop
       Import-Module -Name TerminologyHelper    -ErrorAction Stop
-      $accessKey = Get-AccessKey -id $clientId -secret $clientSecret -lcTenant $lcTenant
+      $prevCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
+      [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::InvariantCulture
+      try {
+        $accessKey = Get-AccessKey -id $clientId -secret $clientSecret -lcTenant $lcTenant
+      } finally {
+        [System.Threading.Thread]::CurrentThread.CurrentCulture = $prevCulture
+      }
     `;
   }
 }
@@ -896,7 +919,9 @@ All Studio tools use the `studioPs()` executor. The Studio toolkit requires PS5 
 
 **Description:** Create a new file-based project from a source files folder. Returns the project folder path, project name, and language pair details.
 
-**Important note on `output_path`:** The tool performs a pre-flight check before calling `New-Project`. If `output_path` already exists and contains any files or folders, the tool returns an error immediately. This prevents the Studio API from recursing into the existing content and creating thousands of nested sub-projects, which requires manual PowerShell cleanup to resolve.
+**Important note on `output_path`:** The tool performs a pre-flight check before calling `New-Project`. If `output_path` already exists and contains any files or folders, the tool returns an error immediately. This prevents the Studio API from recursing into the existing content and creating thousands of nested sub-projects, which requires manual PowerShell cleanup to resolve. If `output_path` does not exist, the tool creates it automatically via `New-Item -ItemType Directory -Force`.
+
+**Source folder validation:** The tool also validates that `source_folder` exists before calling `New-Project`. If the folder is missing, it returns an immediate error rather than letting the toolkit fail silently.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -970,12 +995,14 @@ All Studio tools use the `studioPs()` executor. The Studio toolkit requires PS5 
 
 **Toolkit:** `Open-FileBasedTM`
 
-**Description:** List file-based TMs (`.sdltm` files) found in a specified folder. Opens each TM to read its source and target language from `LanguageDirection.SourceLanguage.Name` / `TargetLanguage.Name`.
+**Description:** List file-based TMs (`.sdltm` files). Supports two modes: if `folder` is provided, scans that folder for `.sdltm` files; if `folder` is omitted, reads registered TMs from `TranslationMemoryRepository.xml` at `%LOCALAPPDATA%\Trados\Trados Studio\{STUDIO_VERSION}\`. Opens each TM to read its source and target language from `LanguageDirection.SourceLanguage.Name` / `TargetLanguage.Name`.
+
+**Important:** The repository XML path uses the AppData version key (e.g. `Studio18`), not the Documents display name (`Studio 2024`). These are different. The `STUDIO_VERSION` env var provides the correct key.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `folder` | string | yes | Folder path to search |
-| `recursive` | boolean | no | Search subfolders (default: false) |
+| `folder` | string | no | Folder path to search (if omitted, reads registered TMs) |
+| `recursive` | boolean | no | Search subfolders when using folder mode (default: false) |
 
 ### 8.10 studio_new_tm
 
@@ -1011,6 +1038,14 @@ All Studio tools use the `studioPs()` executor. The Studio toolkit requires PS5 
 |---|---|---|---|
 | `tm_path` | string | yes | Path to the `.sdltm` file |
 | `output_path` | string | yes | Destination path for the `.tmx` file |
+
+### 8.13 studio_list_project_templates
+
+**Toolkit:** `ApplicationFactory.CreateApplication()` (Studio Project Automation API)
+
+**Description:** List all project templates registered in Trados Studio. Uses the `ApplicationFactory` API to access the `LocalProjectServer.GetProjectTemplates()` method. Requires `CallEnsurePluginRegistryIsCreated()` before `CreateApplication()` to initialise the plugin registry.
+
+No parameters.
 
 ---
 
@@ -1912,6 +1947,8 @@ Go to Settings → Extensions → Advanced settings → Install Extension and se
 
 ### 14.4 Testing Individual Executors
 
+These manual tests use `-Command` for simplicity. The actual Studio executor uses a temp `.ps1` file with UTF-8 BOM instead (see §6.1) to handle non-ASCII paths correctly on ANSI codepage systems. For manual testing with ASCII-only paths, `-Command` works fine.
+
 Test the Studio executor without Claude Desktop:
 
 ```powershell
@@ -2091,3 +2128,6 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/index.js
 15. **GS `gs_org_report` loads global datasets.** The org report tool calls `Get-AllContainers`, `Get-AllTMs`, and `Get-AllProjectTemplates` to retrieve server-wide datasets, then filters locally by organisation. On servers with very large numbers of these resources, this may be slow or hit memory limits. The containers-to-TMs join is particularly expensive as it filters `Get-AllTMs` results by `ContainerId` for each container owned by the target organisation.
 16. **LC customer location propagation delay.** When `lc_new_customer` creates a customer, the corresponding child location may take several seconds to appear in `lc_list_locations`. Scripts that create a customer and immediately need its location ID should allow for a brief delay before querying locations.
 17. **LC destructive operations require empty resources.** `lc_remove_customer` fails if projects, TMs, termbases, or project templates are still associated with the customer's location. Child customers must be removed before their parent. Resources must be deleted in the correct order: TMs and termbases first, then project templates, then child customers, then the parent customer.
+18. **Studio executor: non-ASCII path support.** The Studio executor writes scripts to a temp `.ps1` file with a UTF-8 BOM because PS5's `-Command` argument goes through Windows argument parsing, which mangles non-ASCII characters on systems with an ANSI codepage. This adds a small I/O overhead per tool call (write + delete temp file) but is necessary for correct operation on non-English Windows installations.
+19. **LC locale sensitivity.** The Language Cloud toolkit's `Get-AccessKey` parses date strings from the OAuth token response using US date format assumptions. On non-US locale systems the parse fails. The server works around this by temporarily switching to `InvariantCulture` during the `Get-AccessKey` call.
+20. **Studio version naming trap.** `Studio18` is the AppData/registry key used for paths like `TranslationMemoryRepository.xml`. `Studio 2024` is the Documents display name used for the Projects folder. Mixing these causes silent failures. The `STUDIO_VERSION` env var must use the AppData key form.

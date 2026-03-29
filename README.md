@@ -63,7 +63,7 @@ npm run build
 To pack your own `.mcpb`:
 
 ```bash
-mcpb pack . trados-powershell-mcp-1.7.0.mcpb
+mcpb pack . trados-powershell-mcp-1.7.7.mcpb
 ```
 
 Then install the resulting `.mcpb` file via Claude Desktop as above.
