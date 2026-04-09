@@ -1,7 +1,7 @@
 # Trados PowerShell MCP Server - Technical Design Document
 
 **Version:** 1.7.7
-**Date:** 29 March 2026
+**Date:** 9 April 2026
 **Author:** multifarious
 **Platform:** Node.js (TypeScript), stdio transport
 
@@ -162,7 +162,7 @@ trados-powershell-mcp/
 │   ├── executors/
 │   │   ├── studio-ps.ts                PS5 x86 executor for Studio toolkit calls
 │   │   ├── ps7.ts                      PS7 executor for GroupShare and Language Cloud calls
-│   │   └── common.ts                   Shared utilities: psStr, psPath, extractPsError, safeParseJson
+│   │   └── common.ts                   Shared utilities: psStr, psPath, psJsonParam, extractPsError, safeParseJson, roundPricingDecimals
 │   ├── tools/
 │   │   ├── studio/
 │   │   │   ├── register.ts             Registers all studio_* tools
@@ -216,31 +216,90 @@ trados-powershell-mcp/
 │   │       ├── list-project-templates.ts
 │   │       ├── new-project-template.ts
 │   │       ├── remove-project-template.ts
+│   │       ├── update-project-template.ts
+│   │       ├── export-project-files.ts
+│   │       ├── get-project-files-export-status.ts
+│   │       ├── save-project-files.ts
+│   │       ├── get-task.ts
+│   │       ├── list-assigned-tasks.ts
+│   │       ├── accept-task.ts
+│   │       ├── reject-task.ts
+│   │       ├── complete-task.ts
+│   │       ├── release-task.ts
+│   │       ├── reclaim-task.ts
+│   │       ├── assign-task.ts
+│   │       ├── set-task-deadlines.ts
 │   │       ├── list-tms.ts
 │   │       ├── get-tm.ts
 │   │       ├── new-tm.ts
 │   │       ├── remove-tm.ts
 │   │       ├── import-tm.ts
 │   │       ├── export-tm.ts
+│   │       ├── update-tm.ts
+│   │       ├── copy-tm.ts
+│   │       ├── translation-lookup.ts
+│   │       ├── concordance-search.ts
+│   │       ├── add-translation-unit.ts
+│   │       ├── update-translation-unit.ts
+│   │       ├── request-file-analysis.ts
+│   │       ├── get-file-analysis-status.ts
+│   │       ├── send-zip-file.ts
+│   │       ├── get-zip-file-status.ts
 │   │       ├── list-locations.ts
 │   │       ├── list-customers.ts
 │   │       ├── new-customer.ts
 │   │       ├── update-customer.ts
 │   │       ├── remove-customer.ts
 │   │       ├── list-workflows.ts
+│   │       ├── update-workflow.ts
 │   │       ├── list-translation-engines.ts
+│   │       ├── update-translation-engine.ts
+│   │       ├── list-llm-configurations.ts
 │   │       ├── list-file-type-configurations.ts
 │   │       ├── list-language-processing-rules.ts
 │   │       ├── list-field-templates.ts
 │   │       ├── list-pricing-models.ts
+│   │       ├── new-pricing-model.ts
+│   │       ├── update-pricing-model.ts
+│   │       ├── remove-pricing-model.ts
 │   │       ├── list-schedule-templates.ts
 │   │       ├── list-supported-languages.ts
 │   │       ├── list-groups.ts
+│   │       ├── new-group.ts
+│   │       ├── update-group.ts
+│   │       ├── remove-group.ts
 │   │       ├── list-termbases.ts
-│   │       ├── list-users.ts
 │   │       ├── new-termbase.ts
 │   │       ├── import-termbase.ts
-│   │       └── export-termbase.ts
+│   │       ├── export-termbase.ts
+│   │       ├── update-termbase.ts
+│   │       ├── new-termbase-entry.ts
+│   │       ├── list-termbase-entries.ts
+│   │       ├── get-termbase-entry.ts
+│   │       ├── update-termbase-entry.ts
+│   │       ├── remove-termbase-entry.ts
+│   │       ├── remove-all-termbase-entries.ts
+│   │       ├── search-termbase-terms.ts
+│   │       ├── list-termbase-templates.ts
+│   │       ├── new-termbase-template.ts
+│   │       ├── update-termbase-template.ts
+│   │       ├── remove-termbase-template.ts
+│   │       ├── list-users.ts
+│   │       ├── new-user.ts
+│   │       ├── new-service-user.ts
+│   │       ├── update-user.ts
+│   │       ├── remove-user.ts
+│   │       ├── list-roles.ts
+│   │       ├── get-role.ts
+│   │       ├── new-role.ts
+│   │       ├── update-role.ts
+│   │       ├── remove-role.ts
+│   │       ├── list-permissions.ts
+│   │       ├── list-applications.ts
+│   │       ├── get-application.ts
+│   │       ├── new-application.ts
+│   │       ├── update-application.ts
+│   │       └── remove-application.ts
 │   └── types.ts                        Shared TypeScript types
 └── dist/
     └── index.js
@@ -561,6 +620,34 @@ export function setActiveLcCredential(filePath: string): void {
 }
 ```
 
+### 6.3a ConvertTo-Hashtable preamble function
+
+Every PS7 script invocation injects a `ConvertTo-Hashtable` helper function at the start of the preamble. This is necessary because `ConvertFrom-Json` produces `PSCustomObject` instances, but several toolkit cmdlets declare parameters as `[hashtable]` or `[hashtable[]]`. PowerShell cannot implicitly convert between the two.
+
+The function recursively walks the object tree, converting every `PSCustomObject` into a native hashtable. Arrays are recursed element-by-element. Primitives, existing hashtables, and `$null` pass through unchanged.
+
+```powershell
+function ConvertTo-Hashtable {
+  param ([Parameter(ValueFromPipeline=$true)] $InputObject)
+  process {
+    if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [System.Collections.IList]) {
+      return ,@($InputObject | ForEach-Object { ConvertTo-Hashtable $_ })
+    }
+    if ($InputObject -is [PSCustomObject]) {
+      $ht = @{}
+      foreach ($prop in $InputObject.PSObject.Properties) {
+        $ht[$prop.Name] = ConvertTo-Hashtable $prop.Value
+      }
+      return $ht
+    }
+    return $InputObject
+  }
+}
+```
+
+This function is consumed by `psJsonParam()` in `common.ts`, which generates the expression `(ConvertTo-Hashtable ('...' | ConvertFrom-Json))` for any tool parameter that passes structured JSON to a toolkit cmdlet.
+
 ### 6.4 Common Utilities
 
 **File:** `src/executors/common.ts`
@@ -638,6 +725,52 @@ export function safeParseJson(stdout: string): object {
 ```
 
 All string parameters from tool calls must pass through `psStr()` or `psPath()` before interpolation into script bodies. Numeric and boolean parameters are validated by Zod schemas before use and are never interpolated as strings.
+
+#### psJsonParam
+
+Builds a PowerShell expression that deserialises a JSON string parameter into a hashtable (or array of hashtables) suitable for toolkit cmdlets. Works in conjunction with the `ConvertTo-Hashtable` function injected by the PS7 preamble (see section 6.3a).
+
+```typescript
+export function psJsonParam(jsonString: string): string {
+  return `(ConvertTo-Hashtable (${psStr(jsonString)} | ConvertFrom-Json))`;
+}
+```
+
+Used by any tool that passes structured JSON to a toolkit cmdlet parameter typed as `[hashtable]` or `[hashtable[]]`. The expression pipes the single-quoted JSON through `ConvertFrom-Json` (which produces `PSCustomObject`) and then through `ConvertTo-Hashtable` to produce the native hashtable the toolkit expects.
+
+#### roundPricingDecimals
+
+Pre-processes pricing model JSON to enforce the Language Cloud API's 3 decimal place limit on rate values. Applied in `lc_new_pricing_model` and `lc_update_pricing_model` after `JSON.parse` and before re-serialisation.
+
+```typescript
+const PRICING_RATE_FIELDS = new Set([
+  "perfectMatch", "contextMatch", "exactMatch", "repetition",
+  "machineTranslation", "new", "price", "costPerUnit",
+]);
+
+export function roundPricingDecimals(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => roundPricingDecimals(item));
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(obj)) {
+      const v = obj[key];
+      if (PRICING_RATE_FIELDS.has(key) && typeof v === "number") {
+        result[key] = Math.round(v * 1000) / 1000;
+      } else {
+        result[key] = roundPricingDecimals(v);
+      }
+    }
+    return result;
+  }
+  return value;
+}
+```
+
+Only the 8 named rate fields are rounded. Integer fields (`minimumMatchValue`, `maximumMatchValue`, `unitCount`, etc.) pass through unchanged.
 
 ### 6.5 Output Serialisation
 
@@ -1384,47 +1517,33 @@ Returns the server URL and username from the selected file as confirmation.
 
 ## 10. Tool Definitions - Language Cloud Group (lc_*)
 
-All Language Cloud tools use the `ps7("languagecloud", ...)` executor. The preamble loads five modules - `AuthenticationHelper`, `ProjectHelper`, `ResourcesHelper`, `UsersHelper`, and `TerminologyHelper`. The preamble exposes `$accessKey` (a PSObject with `.token` and `.tenant` properties, returned by `Get-AccessKey`). Every toolkit function receives `$accessKey` as its first argument.
-
-`lc_list_credentials` and `lc_set_credential` use `ps7("languagecloud", ..., { bare: true })` and do not load any modules or connect to any server.
-
-**Key pattern:** Unlike GroupShare, most LC toolkit functions accept resource IDs or names directly (as `$translationMemoryId` / `$translationMemoryName`, `$projectTemplateId` / `$projectTemplateName`, etc.) rather than requiring a PSObject lookup first. Where both are optional, passing the name is sufficient.
+13 Studio + 25 GroupShare + 92 Language Cloud = **130 tools** total.
 
 ### 10.1 lc_list_credentials
 
-**Description:** List Language Cloud credential files in the credential store folder (`LC_CREDENTIAL_STORE`). Decrypts and returns the tenant ID and client ID from each XML file. Does not connect to Language Cloud. Use this to discover which credentials are available before calling `lc_set_credential`.
-
-Uses `ps7({ bare: true })` - no module loading or server connection.
+**Description:** List Language Cloud credential files in the credential store folder.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `folder_path` | string | no | Override the store folder path. Defaults to `LC_CREDENTIAL_STORE`. |
+| `folder_path` | string | no | Path to credential XML folder. Defaults to `LC_CREDENTIAL_STORE`. |
 
 ### 10.2 lc_set_credential
 
-**Description:** Select a Language Cloud credential file from the store and activate it for the current session. Decrypts the file to confirm it is a valid LC credential, then stores the file path in the server's state module. All subsequent LC tool calls will use this credential until changed or until Claude Desktop is restarted.
-
-Uses `ps7({ bare: true })` - no module loading or server connection.
-
-Returns the tenant ID and client ID from the selected file as confirmation.
+**Description:** Select a Language Cloud credential file from the store and activate it for the current session.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `credential_file` | string | yes | Filename (e.g. `languagecloud-prod.xml`) or full path. If a filename only, resolved against `LC_CREDENTIAL_STORE`. |
+| `filename` | string | yes | Filename of the credential XML to activate |
 
 ### 10.3 lc_list_projects
 
-**Toolkit:** `Get-AllProjects`
-
-**Description:** List projects in Language Cloud.
+**Description:** List all projects in Language Cloud.
 
 No parameters.
 
 ### 10.4 lc_get_project
 
-**Toolkit:** `Get-Project`
-
-**Description:** Get details of a specific Language Cloud project. Pass either ID or name.
+**Description:** Get details of a specific Language Cloud project.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
@@ -1433,321 +1552,860 @@ No parameters.
 
 ### 10.5 lc_new_project
 
-**Toolkit:** `New-Project`
-
-**Description:** Create a new Language Cloud project. `$dueDate` (YYYY-MM-DD) and `$dueTime` (HH:MM) are separate mandatory parameters. `$filesPath` is the path to the source files folder. The project template, workflow, translation engine, and file type configuration are specified by name or ID via the `*IdOrName` parameters. An optional `$locationId` scopes the project to a specific location (use `lc_list_locations` to discover location IDs). Reference files can be attached via `$referenceFileNames`.
+**Description:** Create a new Language Cloud project.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Project name |
 | `due_date` | string | yes | Due date (YYYY-MM-DD) |
-| `due_time` | string | yes | Due time (HH:MM, e.g. `17:00`) |
-| `files_path` | string | yes | Path to the folder containing source files |
-| `template_name` | string | no | Project template name or ID (`$projectTemplateIdOrName`) |
-| `source_language` | string | no | Source language code (overrides template if provided) |
-| `target_languages` | string | no | Comma-separated target language codes (overrides template if provided) |
+| `due_time` | string | yes | Due time (HH:MM) |
+| `files_path` | string | yes | Path to source files folder |
+| `template_name` | string | no | Project template name or ID |
+| `source_language` | string | no | Source language code |
+| `target_languages` | string | no | Comma-separated target language codes |
 | `translation_engine` | string | no | Translation engine name or ID |
 | `workflow` | string | no | Workflow name or ID |
-| `file_type_configuration` | string | no | File type configuration name or ID (`$fileTypeConfigurationIdOrName`) |
-| `location_id` | string | no | Location ID to scope the project to (from `lc_list_locations`) |
-| `reference_file_names` | string | no | Comma-separated reference file names to attach |
+| `file_type_configuration` | string | no | File type configuration name or ID |
+| `location_id` | string | no | Location ID |
+| `reference_file_names` | string | no | Comma-separated reference file names |
 | `description` | string | no | Project description |
 
 ### 10.6 lc_list_project_templates
 
-**Toolkit:** `Get-AllProjectTemplates`
-
-**Description:** List all project templates in Language Cloud. Use this to discover template names for `lc_new_project`.
+**Description:** List all project templates in Language Cloud.
 
 No parameters.
 
-### 10.7 lc_list_tms
+### 10.7 lc_new_project_template
 
-**Toolkit:** `Get-AllTranslationMemories`
+**Description:** Create a new project template in Language Cloud.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Template name |
+| `location_id` | string | no | Location ID |
+| `location_name` | string | no | Location name |
+| `source_language` | string | no | Source language code |
+| `target_languages` | string | no | Comma-separated target language codes |
+| `translation_engine` | string | no | Translation engine name or ID |
+| `workflow` | string | no | Workflow name or ID |
+| `file_type_configuration` | string | no | File type configuration name or ID |
+| `description` | string | no | Description |
+
+### 10.8 lc_remove_project_template
+
+**Description:** Delete a project template from Language Cloud.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `template_id` | string | yes | Project template ID |
+
+### 10.9 lc_update_project_template
+
+**Description:** Update an existing project template's settings.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `template_id` | string | yes | Project template ID |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `source_language` | string | no | Source language code |
+| `target_languages` | string | no | Comma-separated target language codes |
+| `translation_engine` | string | no | Translation engine name or ID |
+| `workflow` | string | no | Workflow name or ID |
+| `file_type_configuration` | string | no | File type configuration name or ID |
+
+### 10.10 lc_export_project_files
+
+**Description:** Trigger an export of target files from a project as a ZIP archive. Returns an export ID for polling.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project_id` | string | yes | Project ID |
+| `include_reference_files` | boolean | no | Include reference files (default: false) |
+| `include_versions` | string | no | Target file versions (default: currentVersion) |
+| `target_languages` | string | no | Comma-separated target language codes |
+| `download_flat` | boolean | no | Flatten folder structure (default: false) |
+
+### 10.11 lc_get_project_files_export_status
+
+**Description:** Poll the status of a project files export operation.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project_id` | string | yes | Project ID |
+| `export_id` | string | yes | Export ID from `lc_export_project_files` |
+
+### 10.12 lc_save_project_files
+
+**Description:** Download exported project files as a ZIP archive.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project_id` | string | yes | Project ID |
+| `export_id` | string | yes | Export ID |
+| `output_path` | string | yes | Local path to save the ZIP |
+
+### 10.13 lc_get_task
+
+**Description:** Get details of a specific workflow task by its ID.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | string | yes | Task ID |
+| `fields` | string | no | Comma-separated fields to include |
+
+### 10.14 lc_list_assigned_tasks
+
+**Description:** List workflow tasks assigned to the authenticated user.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `status` | string | no | Filter: created, inProgress, completed, failed, skipped, canceled |
+| `location` | string | no | Comma-separated location IDs |
+| `location_strategy` | string | no | location, lineage, bloodline, genealogy |
+| `fields` | string | no | Comma-separated fields |
+| `sort` | string | no | Sort fields (prefix - for descending) |
+| `skip` | number | no | Pagination offset |
+| `top` | number | no | Items per page (1-100) |
+
+### 10.15 lc_accept_task
+
+**Description:** Accept a task assigned to the current user. Status changes to inProgress.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | string | yes | Task ID |
+
+### 10.16 lc_reject_task
+
+**Description:** Reject a task, returning it to the pool for other assignees.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | string | yes | Task ID |
+
+### 10.17 lc_complete_task
+
+**Description:** Mark a task as completed.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | string | yes | Task ID |
+| `outcome` | string | no | Task outcome (must match applicable outcomes) |
+| `comment` | string | no | Completion comment |
+
+### 10.18 lc_release_task
+
+**Description:** Release a task from its current owner back to the pool.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | string | yes | Task ID |
+
+### 10.19 lc_reclaim_task
+
+**Description:** Reclaim a task, removing the current owner so other assignees can accept it.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | string | yes | Task ID |
+
+### 10.20 lc_assign_task
+
+**Description:** Assign a task to one or more users or groups. Uses `psJsonParam` for the assignees array.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `task_id` | string | yes | Task ID |
+| `assignees` | string | yes | JSON array of `{"id":"...","type":"user\|group"}` objects |
+
+### 10.21 lc_set_task_deadlines
+
+**Description:** Reschedule the deadlines for one or more workflow tasks in a project.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `project_id` | string | yes | Project ID |
+| `due_by` | string | yes | New deadline (ISO 8601) |
+| `task_ids` | string | yes | Comma-separated task IDs |
+
+### 10.22 lc_list_tms
 
 **Description:** List all translation memories in Language Cloud.
 
 No parameters.
 
-### 10.8 lc_get_tm
+### 10.23 lc_get_tm
 
-**Toolkit:** `Get-TranslationMemory`
-
-**Description:** Get details of a specific Language Cloud TM.
+**Description:** Get details of a specific Language Cloud translation memory.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `tm_name` | string | no | TM name |
 | `tm_id` | string | no | TM ID |
 
-### 10.9 lc_new_tm
+### 10.24 lc_new_tm
 
-**Toolkit:** `New-TranslationMemory`, `Get-LanguagePair`
-
-**Description:** Create a new Language Cloud TM. `$languageProcessingIdOrName` and `$fieldTemplateIdOrName` are mandatory toolkit parameters. Use `lc_list_language_processing_rules` and `lc_list_field_templates` to discover available values. The language pair is built via `Get-LanguagePair -sourceLanguage $src -targetLanguages @($tgt)`. An optional `$locationId` scopes the TM to a specific location.
+**Description:** Create a new Language Cloud translation memory.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | TM name |
 | `source_language` | string | yes | Source language code |
-| `target_language` | string | yes | Target language code |
-| `language_processing` | string | yes | Language processing rule name or ID (use `lc_list_language_processing_rules` to discover) |
-| `field_template` | string | yes | Field template name or ID (use `lc_list_field_templates` to discover) |
-| `location_id` | string | no | Location ID to scope the TM to (from `lc_list_locations`) |
-| `description` | string | no | Optional description |
+| `target_languages` | string | yes | Comma-separated target language codes |
+| `language_processing` | string | yes | Language processing rule name or ID |
+| `field_template` | string | yes | Field template name or ID |
+| `location_id` | string | no | Location ID |
+| `location_name` | string | no | Location name |
+| `copyright` | string | no | Copyright text |
+| `description` | string | no | Description |
 
-### 10.10 lc_import_tm
+### 10.25 lc_remove_tm
 
-**Toolkit:** `Import-TranslationMemory`
+**Description:** Delete a translation memory from Language Cloud.
 
-**Description:** Import a TMX file into a Language Cloud TM. The TM is specified by name or ID. The import file path is passed as `$importFileLocation`. Optional parameters control how duplicate and unknown content is handled during import.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `tm_id` | string | no | TM ID |
+| `tm_name` | string | no | TM name |
+
+### 10.26 lc_import_tm
+
+**Description:** Import a TMX file into a Language Cloud translation memory.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `tm_name` | string | no | TM name |
 | `tm_id` | string | no | TM ID |
-| `import_file_path` | string | yes | Path to the `.tmx` file (`$importFileLocation`) |
+| `import_file_path` | string | yes | Path to the .tmx file |
 | `source_language` | string | yes | Source language code |
 | `target_language` | string | yes | Target language code |
-| `import_as_plain_text` | boolean | no | Import as plain text, stripping formatting (default: false) |
-| `export_invalid_tus` | boolean | no | Export invalid translation units to a separate file (default: false) |
-| `trigger_recompute_statistics` | boolean | no | Recompute TM statistics after import (default: true) |
-| `target_segments_differ_option` | string | no | How to handle TUs where target differs: `addNew`, `overwrite`, `keepExisting`, `mergeIntoExisting` |
-| `unknown_fields_option` | string | no | How to handle unknown fields: `addToTranslationMemory`, `ignore`, `skipTranslationUnit` |
-| `confirmation_levels` | string | no | Comma-separated confirmation levels to import: `translated`, `approvedTranslation`, `approvedSignOff`, `draft`, `rejectedTranslation`, `rejectedSignOff`. Imports all levels if omitted. Maps to `-onlyImportSegmentsWithConfirmationLevels` |
+| `import_as_plain_text` | boolean | no | Strip formatting (default: false) |
+| `export_invalid_tus` | boolean | no | Export invalid TUs (default: false) |
+| `trigger_recompute_statistics` | boolean | no | Recompute stats (default: true) |
+| `target_segments_differ_option` | string | no | addNew, overwrite, keepExisting, mergeIntoExisting |
+| `unknown_fields_option` | string | no | addToTranslationMemory, ignore, skipTranslationUnit |
+| `confirmation_levels` | string | no | Comma-separated levels to import |
 
-### 10.11 lc_export_tm
+### 10.27 lc_export_tm
 
-**Toolkit:** `Export-TranslationMemory`
-
-**Description:** Export a Language Cloud TM to TMX. The TM is specified by name or ID.
+**Description:** Export a Language Cloud translation memory to TMX.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `tm_name` | string | no | TM name |
 | `tm_id` | string | no | TM ID |
-| `output_path` | string | yes | Destination path for the export (`$outputFilePath`) |
+| `output_path` | string | yes | Local path for exported .tmx file |
+
+### 10.28 lc_update_tm
+
+**Description:** Update an existing TM's name, description, copyright, languages, or associated rules.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `tm_id` | string | no | TM ID |
+| `tm_name` | string | no | TM name |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `copyright` | string | no | New copyright |
+| `source_language` | string | no | New source language code |
+| `target_languages` | string | no | Comma-separated new target language codes |
+| `language_processing` | string | no | Language processing rule name or ID |
+| `field_template` | string | no | Field template name or ID |
+
+### 10.29 lc_copy_tm
+
+**Description:** Duplicate a translation memory. The copy is created with ' (copy)' appended to the name.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `tm_id` | string | no | TM ID |
+| `tm_name` | string | no | TM name |
+
+### 10.30 lc_translation_lookup
+
+**Description:** Perform a TM lookup for a text segment against TMs associated with a translation engine.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `content` | string | yes | Source text to look up |
 | `source_language` | string | yes | Source language code |
 | `target_language` | string | yes | Target language code |
+| `translation_engine_id` | string | yes | Translation engine ID |
+| `minimum_match_value` | number | no | Minimum match percentage |
 
-### 10.12 lc_list_customers
+### 10.31 lc_concordance_search
 
-**Toolkit:** `Get-AllCustomers`
+**Description:** Perform a concordance search against TMs associated with a translation engine.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `content` | string | yes | Text to search for |
+| `source_language` | string | yes | Source language code |
+| `target_language` | string | yes | Target language code |
+| `translation_engine_id` | string | yes | Translation engine ID |
+| `target_only` | boolean | no | Search target segments only (default: false) |
+
+### 10.32 lc_add_translation_unit
+
+**Description:** Add a new translation unit to the TMs associated with a translation engine. Uses `psJsonParam` for the optional settings parameter.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `content` | string | yes | TU content (XLIFF or structured string) |
+| `translation_engine_id` | string | yes | Translation engine ID |
+| `settings_json` | string | no | JSON settings string |
+
+### 10.33 lc_update_translation_unit
+
+**Description:** Update an existing translation unit. Uses `psJsonParam` for the optional settings parameter.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `content` | string | yes | Updated TU content |
+| `translation_engine_id` | string | yes | Translation engine ID |
+| `settings_json` | string | no | JSON settings string |
+
+### 10.34 lc_request_file_analysis
+
+**Description:** Request word count analysis for files. Returns an operation ID for polling.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `file_ids` | string | yes | Comma-separated file IDs |
+| `source_language` | string | yes | Source language code |
+| `target_language` | string | yes | Target language code |
+| `translation_engine_id` | string | no | Translation engine ID for match analysis |
+
+### 10.35 lc_get_file_analysis_status
+
+**Description:** Poll the status of a file analysis operation.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `operation_id` | string | yes | Operation ID from `lc_request_file_analysis` |
+
+### 10.36 lc_send_zip_file
+
+**Description:** Upload a ZIP archive for server-side file extraction.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `file_path` | string | yes | Local path to .zip file |
+
+### 10.37 lc_get_zip_file_status
+
+**Description:** Poll the status of a ZIP file extraction.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `file_id` | string | yes | File ID from `lc_send_zip_file` |
+
+### 10.38 lc_list_locations
+
+**Description:** List all locations in Language Cloud.
+
+No parameters.
+
+### 10.39 lc_list_customers
 
 **Description:** List all customers in Language Cloud.
 
 No parameters.
 
-### 10.13 lc_list_workflows
+### 10.40 lc_new_customer
 
-**Toolkit:** `Get-AllWorkflows`
+**Description:** Create a new customer in Language Cloud.
 
-**Description:** List all workflows available in Language Cloud. Use this to understand available workflow options when creating projects.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Customer name |
+| `location_id` | string | no | Parent location ID |
+| `location_name` | string | no | Parent location name |
+
+### 10.41 lc_update_customer
+
+**Description:** Update an existing customer's properties.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `customer_id` | string | no | Customer ID |
+| `customer_name` | string | no | Customer name |
+| `name` | string | no | New name |
+
+### 10.42 lc_remove_customer
+
+**Description:** Delete a customer from Language Cloud.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `customer_id` | string | no | Customer ID |
+| `customer_name` | string | no | Customer name |
+
+### 10.43 lc_list_workflows
+
+**Description:** List all workflows available in Language Cloud.
 
 No parameters.
 
-### 10.14 lc_list_translation_engines
+### 10.44 lc_update_workflow
 
-**Toolkit:** `Get-AllTranslationEngines`
+**Description:** Update a workflow's name, description, and/or task configurations. Uses `psJsonParam` for the task configurations parameter.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `workflow_id` | string | yes | Workflow ID |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `task_configurations_json` | string | no | JSON array of task configuration objects |
+
+### 10.45 lc_list_translation_engines
 
 **Description:** List all translation engines configured in Language Cloud.
 
 No parameters.
 
-### 10.15 lc_list_termbases
+### 10.46 lc_update_translation_engine
 
-**Toolkit:** `Get-AllTermbases` (TerminologyHelper)
+**Description:** Update a translation engine's name, description, and/or definition. Uses `psJsonParam` for the definition parameter.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `translation_engine_id` | string | yes | Translation engine ID |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `definition_json` | string | no | JSON string for the full engine definition |
+
+### 10.47 lc_list_llm_configurations
+
+**Description:** List all LLM configurations for the account.
+
+No parameters.
+
+### 10.48 lc_list_file_type_configurations
+
+**Description:** List all file type configurations in Language Cloud.
+
+No parameters.
+
+### 10.49 lc_list_language_processing_rules
+
+**Description:** List all language processing rules in Language Cloud.
+
+No parameters.
+
+### 10.50 lc_list_field_templates
+
+**Description:** List all field templates in Language Cloud.
+
+No parameters.
+
+### 10.51 lc_list_pricing_models
+
+**Description:** List all pricing models in Language Cloud.
+
+No parameters.
+
+### 10.52 lc_new_pricing_model
+
+**Description:** Create a new pricing model. Rate values in `language_direction_pricing_json` and `additional_costs_json` are silently rounded to 3 decimal places before submission (LC API constraint). Uses `psJsonParam` for both JSON parameters.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Pricing model name |
+| `currency_code` | string | yes | Currency code (EUR, USD, GBP, etc.) |
+| `location_id` | string | no | Location ID |
+| `location_name` | string | no | Location name |
+| `description` | string | no | Description |
+| `language_direction_pricing_json` | string | no | JSON array of per-language-direction pricing |
+| `additional_costs_json` | string | no | JSON array of additional costs |
+
+### 10.53 lc_update_pricing_model
+
+**Description:** Update an existing pricing model. Same 3dp rounding as `lc_new_pricing_model`. Uses `psJsonParam` for both JSON parameters.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `pricing_model_id` | string | yes | Pricing model ID |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `currency_code` | string | no | New currency code |
+| `language_direction_pricing_json` | string | no | JSON array of per-language-direction pricing |
+| `additional_costs_json` | string | no | JSON array of additional costs |
+
+### 10.54 lc_remove_pricing_model
+
+**Description:** Delete a pricing model. Must not be in use by any active project template.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `pricing_model_id` | string | yes | Pricing model ID |
+
+### 10.55 lc_list_schedule_templates
+
+**Description:** List all schedule templates in Language Cloud.
+
+No parameters.
+
+### 10.56 lc_list_supported_languages
+
+**Description:** List all languages supported by Language Cloud.
+
+No parameters.
+
+### 10.57 lc_list_groups
+
+**Description:** List all user groups in Language Cloud.
+
+No parameters.
+
+### 10.58 lc_new_group
+
+**Description:** Create a new group.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Group name |
+| `description` | string | no | Description |
+| `location_id` | string | no | Location ID |
+| `location_name` | string | no | Location name |
+| `role_ids` | string | no | Comma-separated role IDs |
+| `user_ids` | string | no | Comma-separated user IDs |
+
+### 10.59 lc_update_group
+
+**Description:** Update an existing group's properties.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `group_id` | string | no | Group ID |
+| `group_name` | string | no | Group name |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `role_ids` | string | no | Comma-separated role IDs (replaces current) |
+| `user_ids` | string | no | Comma-separated user IDs (replaces current) |
+
+### 10.60 lc_remove_group
+
+**Description:** Delete a group from Language Cloud.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `group_id` | string | no | Group ID |
+| `group_name` | string | no | Group name |
+
+### 10.61 lc_list_termbases
 
 **Description:** List all termbases in Language Cloud.
 
 No parameters.
 
-### 10.16 lc_list_users
+### 10.62 lc_new_termbase
 
-**Toolkit:** `Get-AllUsers` (UsersHelper)
-
-**Description:** List users in Language Cloud.
-
-No parameters.
-
-### 10.17 lc_new_termbase
-
-**Toolkit:** `New-Termbase` (TerminologyHelper)
-
-**Description:** Create a new termbase in Language Cloud. The termbase structure can be defined either by a named termbase template (`$termbaseTemplateName`) or by an XDT file (`$pathToXDT`). When using an XDT file, set `inherit_languages` to true to derive the termbase languages from the XDT definition. An optional `$locationId` scopes the termbase to a specific location.
+**Description:** Create a new termbase. Define structure via `termbase_template` or `xdt_path`.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Termbase name |
-| `termbase_template` | string | no | Termbase template name or ID. Required if `xdt_path` is not provided. |
-| `xdt_path` | string | no | Path to an XDT file defining the termbase structure. Alternative to `termbase_template`. |
-| `inherit_languages` | boolean | no | Inherit languages from the XDT file (default: true when `xdt_path` is provided) |
-| `location_id` | string | no | Location ID to scope the termbase to (from `lc_list_locations`) |
-| `description` | string | no | Optional description |
+| `termbase_template` | string | no | Template name or ID |
+| `xdt_path` | string | no | Path to XDT file |
+| `inherit_languages` | boolean | no | Inherit languages from XDT (default: true when xdt_path provided) |
+| `location_id` | string | no | Location ID |
+| `description` | string | no | Description |
 
-### 10.18 lc_import_termbase
+### 10.63 lc_import_termbase
 
-**Toolkit:** `Import-Termbase` (TerminologyHelper)
-
-**Description:** Import a termbase file (MultiTerm XML, TBX, or other supported format) into a Language Cloud termbase. Provide either `termbase_name` or `termbase_id`. Optional parameters control duplicate handling and import strictness.
+**Description:** Import a termbase file into a Language Cloud termbase.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `termbase_name` | string | no | Termbase name |
 | `termbase_id` | string | no | Termbase ID |
 | `import_file_path` | string | yes | Path to the import file |
-| `duplicate_entries_strategy` | string | no | How to handle duplicate entries: `merge`, `overwrite`, `skipExisting` |
-| `strict_import` | boolean | no | Enable strict import validation (default: false) |
 
-### 10.19 lc_export_termbase
+### 10.64 lc_export_termbase
 
-**Toolkit:** `Export-Termbase` (TerminologyHelper)
-
-**Description:** Export a Language Cloud termbase to a file. Provide either `termbase_name` or `termbase_id`.
+**Description:** Export a Language Cloud termbase to a file.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `termbase_name` | string | no | Termbase name |
 | `termbase_id` | string | no | Termbase ID |
-| `output_path` | string | yes | Destination path for the exported file |
+| `output_path` | string | yes | Local path for exported file |
 
-### 10.20 lc_list_locations
+### 10.65 lc_update_termbase
 
-**Toolkit:** `Get-AllLocations` (ResourcesHelper)
-
-**Description:** List all locations in Language Cloud. Locations are the organisational hierarchy in LC (equivalent to GroupShare organisations). Many LC resources (TMs, termbases, project templates, customers) are scoped to a location. Use this tool to discover location IDs for use with `lc_new_project`, `lc_new_tm`, `lc_new_termbase`, `lc_new_project_template`, and `lc_new_customer`. The root location is typically the first entry returned.
-
-No parameters.
-
-### 10.21 lc_list_groups
-
-**Toolkit:** `Get-AllGroups` (UsersHelper)
-
-**Description:** List all user groups in Language Cloud.
-
-No parameters.
-
-### 10.22 lc_list_file_type_configurations
-
-**Toolkit:** `Get-AllFileTypeConfigurations` (ResourcesHelper)
-
-**Description:** List all file type configurations in Language Cloud. Use this to discover file type configuration names or IDs for `lc_new_project`. Each configuration has an associated location.
-
-No parameters.
-
-### 10.23 lc_list_language_processing_rules
-
-**Toolkit:** `Get-AllLanguageProcessingRules` (ResourcesHelper)
-
-**Description:** List all language processing rules in Language Cloud. Use this to discover the language processing rule name or ID required by `lc_new_tm`. Each rule has an associated location. Use `location_strategy` to control how rules are resolved relative to a location.
+**Description:** Update an existing termbase's name, description, copyright, or languages.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `location_id` | string | no | Scope to a specific location |
-| `location_strategy` | string | no | Location resolution strategy (e.g. `bloodline`). When set, also searches parent locations. |
+| `termbase_id` | string | no | Termbase ID |
+| `termbase_name` | string | no | Termbase name |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `copyright` | string | no | New copyright |
+| `language_codes` | string | no | Comma-separated language codes |
 
-### 10.24 lc_list_field_templates
+### 10.66 lc_new_termbase_entry
 
-**Toolkit:** `Get-AllFieldTemplates` (ResourcesHelper)
-
-**Description:** List all field templates in Language Cloud. Use this to discover the field template name or ID required by `lc_new_tm`. Each template has an associated location. Use `location_strategy` to control how templates are resolved relative to a location.
+**Description:** Create a new terminology entry in a termbase. Uses `psJsonParam` for the entry structure.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `location_id` | string | no | Scope to a specific location |
-| `location_strategy` | string | no | Location resolution strategy (e.g. `bloodline`). When set, also searches parent locations. |
+| `termbase_id` | string | yes | Termbase ID |
+| `entry_json` | string | yes | JSON string representing the entry structure |
 
-### 10.25 lc_list_pricing_models
+### 10.67 lc_list_termbase_entries
 
-**Toolkit:** `Get-AllPricingModels` (ResourcesHelper)
+**Description:** List entries in a termbase with optional pagination.
 
-**Description:** List all pricing models in Language Cloud.
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `termbase_id` | string | yes | Termbase ID |
+| `skip` | number | no | Items to skip (default: 0) |
+| `top` | number | no | Items per page (default: 100) |
+
+### 10.68 lc_get_termbase_entry
+
+**Description:** Get full details of a single termbase entry including all languages, terms, and field values.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `termbase_id` | string | yes | Termbase ID |
+| `entry_id` | string | yes | Entry ID |
+
+### 10.69 lc_update_termbase_entry
+
+**Description:** Replace an existing termbase entry. Uses `psJsonParam` for the entry structure.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `termbase_id` | string | yes | Termbase ID |
+| `entry_id` | string | yes | Entry ID |
+| `entry_json` | string | yes | JSON string representing the updated entry |
+
+### 10.70 lc_remove_termbase_entry
+
+**Description:** Delete a single entry from a termbase.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `termbase_id` | string | yes | Termbase ID |
+| `entry_id` | string | yes | Entry ID |
+
+### 10.71 lc_remove_all_termbase_entries
+
+**Description:** Delete all entries from a termbase. Destructive bulk operation, cannot be undone.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `termbase_id` | string | yes | Termbase ID |
+
+### 10.72 lc_search_termbase_terms
+
+**Description:** Search for terms in a termbase by source language.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `termbase_id` | string | yes | Termbase ID |
+| `query` | string | yes | Search text |
+| `source_language` | string | yes | Source language code |
+
+### 10.73 lc_list_termbase_templates
+
+**Description:** List all termbase templates in Language Cloud.
 
 No parameters.
 
-### 10.26 lc_list_schedule_templates
+### 10.74 lc_new_termbase_template
 
-**Toolkit:** `Get-AllScheduleTemplates` (ResourcesHelper)
-
-**Description:** List all schedule templates in Language Cloud.
-
-No parameters.
-
-### 10.27 lc_list_supported_languages
-
-**Toolkit:** `Get-SupportedLanguages` (ResourcesHelper)
-
-**Description:** List all languages supported by Language Cloud. Returns language code, English name, script direction, and whether the code is a neutral (region-independent) code. Useful for discovering valid language codes before creating projects, TMs, or termbases.
-
-No parameters.
-
-### 10.28 lc_new_customer
-
-**Toolkit:** `New-Customer` (ResourcesHelper)
-
-**Description:** Create a new customer in Language Cloud. The customer is scoped to a location. Creating a customer also creates a corresponding location as a child of the specified parent location; this new location may take a few seconds to become visible via `lc_list_locations`.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `name` | string | yes | Customer name |
-| `location_id` | string | yes | Parent location ID (from `lc_list_locations`) |
-
-### 10.29 lc_update_customer
-
-**Toolkit:** `Update-Customer` (ResourcesHelper)
-
-**Description:** Update an existing customer's properties. Currently supports updating the RAG (Red/Amber/Green) status.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `customer_id` | string | yes | Customer ID (from `lc_list_customers`) |
-| `rag_status` | string | no | RAG status: `red`, `amber`, `green` |
-
-### 10.30 lc_remove_customer
-
-**Toolkit:** `Remove-Customer` (ResourcesHelper)
-
-**Description:** Delete a customer from Language Cloud. Child customers must be removed before their parent. Any resources (projects, TMs, termbases) still associated with the customer's location must be removed first.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `customer_id` | string | yes | Customer ID (from `lc_list_customers`) |
-
-### 10.31 lc_remove_tm
-
-**Toolkit:** `Remove-TranslationMemory` (ResourcesHelper)
-
-**Description:** Delete a translation memory from Language Cloud. The TM must not be in use by any active project.
-
-| Parameter | Type | Required | Description |
-|---|---|---|---|
-| `tm_id` | string | yes | Translation memory ID (from `lc_list_tms` or `lc_get_tm`) |
-
-### 10.32 lc_new_project_template
-
-**Toolkit:** `New-ProjectTemplate` (ProjectHelper)
-
-**Description:** Create a new project template in Language Cloud. The template defines default settings (source/target languages, file type configuration, translation engine, workflow) that can be reused across multiple projects via `lc_new_project`.
+**Description:** Create a new termbase template.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes | Template name |
-| `location_id` | string | yes | Location ID to scope the template to (from `lc_list_locations`) |
-| `source_language` | string | yes | Source language code |
-| `target_languages` | string | yes | Comma-separated target language codes |
-| `file_type_configuration` | string | yes | File type configuration name or ID (`$fileTypeConfigurationIdOrName`) |
-| `translation_engine` | string | yes | Translation engine name or ID |
-| `workflow` | string | yes | Workflow name or ID |
+| `location_id` | string | no | Location ID |
+| `location_name` | string | no | Location name |
+| `language_codes` | string | no | Comma-separated language codes |
+| `termbase_template_name` | string | no | Existing template to inherit from |
+| `xdt_path` | string | no | Path to XDT file |
+| `inherit_languages` | boolean | no | Inherit languages (default: true) |
+| `description` | string | no | Description |
 
-### 10.33 lc_remove_project_template
+### 10.75 lc_update_termbase_template
 
-**Toolkit:** `Remove-ProjectTemplate` (ProjectHelper)
-
-**Description:** Delete a project template from Language Cloud.
+**Description:** Update an existing termbase template's name, description, or languages.
 
 | Parameter | Type | Required | Description |
 |---|---|---|---|
-| `template_id` | string | yes | Project template ID (from `lc_list_project_templates`) |
+| `template_id` | string | no | Template ID |
+| `template_name` | string | no | Template name |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `language_codes` | string | no | Comma-separated language codes |
+
+### 10.76 lc_remove_termbase_template
+
+**Description:** Delete a termbase template.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `template_id` | string | no | Template ID |
+| `template_name` | string | no | Template name |
+
+### 10.77 lc_list_users
+
+**Description:** List users in Language Cloud.
+
+No parameters.
+
+### 10.78 lc_new_user
+
+**Description:** Create a new human user. The user receives an invitation email.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `email` | string | yes | User's email address |
+| `location_id` | string | no | Location ID |
+| `location_name` | string | no | Location name |
+| `group_ids` | string | no | Comma-separated group IDs |
+
+### 10.79 lc_new_service_user
+
+**Description:** Create a new service user for API integrations and automated processes.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Display name |
+| `description` | string | no | Description |
+| `location_id` | string | no | Location ID |
+| `location_name` | string | no | Location name |
+| `group_ids` | string | no | Comma-separated group IDs |
+
+### 10.80 lc_update_user
+
+**Description:** Update an existing user's details.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `user_id` | string | no | User ID |
+| `user_email` | string | no | User email |
+| `name` | string | no | Display name (service users) |
+| `description` | string | no | Description (service users) |
+| `first_name` | string | no | First name (human users) |
+| `last_name` | string | no | Last name (human users) |
+| `group_ids` | string | no | Comma-separated group IDs (replaces current) |
+
+### 10.81 lc_remove_user
+
+**Description:** Delete a user from Language Cloud.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `user_id` | string | no | User ID |
+| `user_email` | string | no | User email |
+
+### 10.82 lc_list_roles
+
+**Description:** List all roles available in Language Cloud, including IDs, names, descriptions, types, and permissions.
+
+No parameters.
+
+### 10.83 lc_get_role
+
+**Description:** Get details of a specific role including its permissions.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `role_id` | string | no | Role ID |
+| `role_name` | string | no | Role name |
+
+### 10.84 lc_new_role
+
+**Description:** Create a new custom role with specified permissions.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Role name |
+| `description` | string | no | Description |
+| `permissions` | string | no | Comma-separated permission names |
+
+### 10.85 lc_update_role
+
+**Description:** Update an existing role's name, description, or permissions.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `role_id` | string | no | Role ID |
+| `role_name` | string | no | Role name |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `permissions` | string | no | Comma-separated permission names (replaces current) |
+
+### 10.86 lc_remove_role
+
+**Description:** Delete a custom role.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `role_id` | string | no | Role ID |
+| `role_name` | string | no | Role name |
+
+### 10.87 lc_list_permissions
+
+**Description:** List all permissions available in Language Cloud. Use this to discover permission names when creating or updating roles.
+
+No parameters.
+
+### 10.88 lc_list_applications
+
+**Description:** List all applications registered in Language Cloud.
+
+No parameters.
+
+### 10.89 lc_get_application
+
+**Description:** Get details of a specific application.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `application_id` | string | no | Application ID |
+| `application_name` | string | no | Application name |
+
+### 10.90 lc_new_application
+
+**Description:** Create a new application for API integrations.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | yes | Application name |
+| `description` | string | no | Description |
+| `enable_api_access` | boolean | no | Enable API access (default: true) |
+| `service_user_id` | string | no | Service user ID to associate |
+
+### 10.91 lc_update_application
+
+**Description:** Update an existing application's properties.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `application_id` | string | no | Application ID |
+| `application_name` | string | no | Application name |
+| `name` | string | no | New name |
+| `description` | string | no | New description |
+| `enable_api_access` | boolean | no | Enable/disable API access |
+| `service_user_id` | string | no | Service user ID |
+| `regenerate_secret` | boolean | no | Regenerate client secret (default: false) |
+
+### 10.92 lc_remove_application
+
+**Description:** Delete an application from Language Cloud.
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `application_id` | string | no | Application ID |
+| `application_name` | string | no | Application name |
 
 ---
 
@@ -2131,3 +2789,5 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node dist/index.js
 18. **Studio executor: non-ASCII path support.** The Studio executor writes scripts to a temp `.ps1` file with a UTF-8 BOM because PS5's `-Command` argument goes through Windows argument parsing, which mangles non-ASCII characters on systems with an ANSI codepage. This adds a small I/O overhead per tool call (write + delete temp file) but is necessary for correct operation on non-English Windows installations.
 19. **LC locale sensitivity.** The Language Cloud toolkit's `Get-AccessKey` parses date strings from the OAuth token response using US date format assumptions. On non-US locale systems the parse fails. The server works around this by temporarily switching to `InvariantCulture` during the `Get-AccessKey` call.
 20. **Studio version naming trap.** `Studio18` is the AppData/registry key used for paths like `TranslationMemoryRepository.xml`. `Studio 2024` is the Documents display name used for the Projects folder. Mixing these causes silent failures. The `STUDIO_VERSION` env var must use the AppData key form.
+21. **LC pricing model 3dp constraint.** The Language Cloud API rejects numeric rate values with more than 3 decimal places on pricing model fields. The `lc_new_pricing_model` and `lc_update_pricing_model` tools silently round the 8 known rate fields (`perfectMatch`, `contextMatch`, `exactMatch`, `repetition`, `machineTranslation`, `new`, `price`, `costPerUnit`) to 3 decimal places before submission via `roundPricingDecimals()` in `common.ts`. Integer fields like `minimumMatchValue` and `maximumMatchValue` are not affected.
+22. **LC `psJsonParam` dependency on preamble.** Any tool that passes structured JSON to a toolkit cmdlet typed as `[hashtable]` or `[hashtable[]]` must use `psJsonParam()`, which generates an expression referencing the `ConvertTo-Hashtable` function. This function is injected by the PS7 preamble. If a tool were to use the `bare` option to skip the preamble, `psJsonParam` calls would fail. No current tool does this.

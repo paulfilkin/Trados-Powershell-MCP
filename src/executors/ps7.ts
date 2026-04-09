@@ -13,6 +13,37 @@ interface Ps7Options {
   bare?: boolean; // skip module loading and auth preamble entirely
 }
 
+/**
+ * Recursive helper injected into every PS7 script.
+ *
+ * ConvertFrom-Json produces PSCustomObject instances, but several toolkit
+ * cmdlets declare parameters as [hashtable] or [hashtable[]]. PowerShell
+ * cannot implicitly convert between the two. This function walks the
+ * object tree and converts every PSCustomObject into a native hashtable.
+ *
+ * Safe to apply unconditionally - hashtables and primitives pass through
+ * unchanged.
+ */
+const CONVERT_TO_HASHTABLE_FN = `
+function ConvertTo-Hashtable {
+  param ([Parameter(ValueFromPipeline=$true)] $InputObject)
+  process {
+    if ($null -eq $InputObject) { return $null }
+    if ($InputObject -is [System.Collections.IList]) {
+      return ,@($InputObject | ForEach-Object { ConvertTo-Hashtable $_ })
+    }
+    if ($InputObject -is [PSCustomObject]) {
+      $ht = @{}
+      foreach ($prop in $InputObject.PSObject.Properties) {
+        $ht[$prop.Name] = ConvertTo-Hashtable $prop.Value
+      }
+      return $ht
+    }
+    return $InputObject
+  }
+}
+`;
+
 function buildPreamble(type: ToolkitType): string {
   if (type === "groupshare") {
     const modulesPath = process.env.GS_MODULES_PATH;
@@ -40,6 +71,7 @@ function buildPreamble(type: ToolkitType): string {
       `;
     }
     return `
+      ${CONVERT_TO_HASHTABLE_FN}
       ${modulePathBlock}
       ${authBlock}
       Import-Module -Name AuthenticationHelper        -ArgumentList $serverUrl -ErrorAction Stop
@@ -81,7 +113,14 @@ function buildPreamble(type: ToolkitType): string {
         $lcTenant     = ${psStr(tenant)}
       `;
     }
+
+    // Optional base URI override for targeting different API endpoints
+    const baseUri = process.env.LC_BASE_URI;
+    const baseUriArg = baseUri ? ` -baseUri ${psStr(baseUri)}` : "";
+    const baseUriBlock = baseUri ? `Set-BaseUri -uri ${psStr(baseUri)}` : "";
+
     return `
+      ${CONVERT_TO_HASHTABLE_FN}
       ${modulePathBlock}
       ${authBlock}
       Import-Module -Name AuthenticationHelper -ErrorAction Stop
@@ -92,11 +131,12 @@ function buildPreamble(type: ToolkitType): string {
       $savedCulture = [System.Threading.Thread]::CurrentThread.CurrentCulture
       [System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]::InvariantCulture
       try {
-          $accessKey = Get-AccessKey -id $clientId -secret $clientSecret -lcTenant $lcTenant
+          $accessKey = Get-AccessKey -id $clientId -secret $clientSecret -lcTenant $lcTenant${baseUriArg}
       }
       finally {
           [System.Threading.Thread]::CurrentThread.CurrentCulture = $savedCulture
       }
+      ${baseUriBlock}
     `;
   }
 }

@@ -19,6 +19,23 @@ export function extractPsError(stderr: string): string {
 }
 
 /**
+ * Build a PowerShell expression that deserialises a JSON string parameter
+ * into a hashtable (or array of hashtables) suitable for toolkit cmdlets.
+ *
+ * The preamble injects a `ConvertTo-Hashtable` function that recursively
+ * converts PSCustomObject trees produced by ConvertFrom-Json into native
+ * hashtables. This helper generates the expression that calls it.
+ *
+ * Usage in tool files:
+ *   const pricingArg = params.language_direction_pricing_json
+ *     ? `-languageDirectionPricing ${psJsonParam(params.language_direction_pricing_json)}`
+ *     : "";
+ */
+export function psJsonParam(jsonString: string): string {
+  return `(ConvertTo-Hashtable (${psStr(jsonString)} | ConvertFrom-Json))`;
+}
+
+/**
  * Safely parse JSON from PowerShell stdout.
  *
  * Some toolkit functions write warnings or error messages to stdout via
@@ -78,4 +95,51 @@ export function safeParseJson(stdout: string): object {
   } catch {
     throw new Error(trimmed);
   }
+}
+
+/**
+ * Field names within pricing model JSON that represent monetary rates
+ * and must be rounded to 3 decimal places (Language Cloud API constraint).
+ */
+const PRICING_RATE_FIELDS = new Set([
+  "perfectMatch",
+  "contextMatch",
+  "exactMatch",
+  "repetition",
+  "machineTranslation",
+  "new",
+  "price",
+  "costPerUnit",
+]);
+
+/**
+ * Round monetary rate values in a pricing model JSON structure to 3dp.
+ *
+ * The Language Cloud API rejects numeric values with more than 3 decimal
+ * places on pricing fields. This function walks the parsed object tree
+ * and rounds only the known rate field names, leaving integer fields
+ * (minimumMatchValue, maximumMatchValue, unitCount, etc.) untouched.
+ *
+ * Applied after JSON.parse and before re-serialisation, so the rounding
+ * is transparent to both caller and PowerShell.
+ */
+export function roundPricingDecimals(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => roundPricingDecimals(item));
+  }
+  if (typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const result: Record<string, unknown> = {};
+    for (const key of Object.keys(obj)) {
+      const v = obj[key];
+      if (PRICING_RATE_FIELDS.has(key) && typeof v === "number") {
+        result[key] = Math.round(v * 1000) / 1000;
+      } else {
+        result[key] = roundPricingDecimals(v);
+      }
+    }
+    return result;
+  }
+  return value;
 }
